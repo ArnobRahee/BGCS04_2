@@ -10,7 +10,7 @@
   --ash: var(--ncaa-blue); --ash-hover: var(--hover); --ash-active: var(--ice); --ash-line: var(--border); --ash-text: var(--text); --ash-muted: var(--text-2);
   --ash-deep: var(--navy);
   --gold: var(--bright-blue); --blue: var(--ncaa-blue); --blue-dark: var(--ncaa-blue-hover); --blue-soft: var(--ice);
-  --ink: var(--text); --muted: var(--text-2); --faint: var(--text-2); --line: var(--border); --line2: var(--border); --bg: var(--white);
+  --ink: var(--text); --muted: var(--text-2); --faint: var(--text-2); --line: var(--border); --line2: var(--border); --bg: #F0F5FC;
   --ok: #1E7A50; --ok-bg: #E7F5EE; --warn: #8A4B0F; --warn-bg: #FFF4E5; --bad: #B42318; --bad-bg: #FEF3F2;
   /* radii */
   --r-btn: 10px; --r-input: 10px; --r-menu: 12px; --r-nav: 10px; --r-card: 14px; --r-panel: 12px; --r-modal: 16px; --r-chat: 14px; --r-tip: 8px;
@@ -489,12 +489,12 @@ details.menu li { padding: 6px 0; border-top: 1px solid #eef0f1; display: flex; 
 /* auth + onboarding */
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: 1fr minmax(380px, 520px); }
 .auth-side { background: var(--ash); color: #fff; padding: 48px 56px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden; }
-.auth-side::after { content: "✈"; position: absolute; right: -30px; bottom: -60px; font-size: 360px; color: #ffffff0a; line-height: 1; }
+.auth-side::after { content: "âœˆ"; position: absolute; right: -30px; bottom: -60px; font-size: 360px; color: #ffffff0a; line-height: 1; }
 .auth-side h1 { font-size: 40px; line-height: 1.08; font-weight: 500; margin: 18px 0 14px; max-width: 520px; }
 .auth-side p { color: #dde1e4; font-size: 15px; max-width: 460px; }
 .auth-points { display: grid; gap: 14px; margin-top: 34px; max-width: 460px; }
 .auth-points li { display: flex; gap: 12px; font-size: 13px; color: #e8ebed; }
-.auth-points li::before { content: "✓"; color: var(--gold); font-weight: 700; }
+.auth-points li::before { content: "âœ“"; color: var(--gold); font-weight: 700; }
 .auth-main { background: #fff; display: flex; flex-direction: column; justify-content: center; padding: 48px 46px; }
 .auth-main h2 { font-size: 24px; margin: 6px 0 20px; }
 .auth-tabs { display: flex; border-bottom: 1px solid var(--line2); margin-bottom: 16px; }
@@ -830,7 +830,7 @@ body.collapsed .side-team { padding: 6px; justify-content: center; }
 :focus-visible { outline: none !important; box-shadow: var(--focus) !important; }
 /* secondary buttons on blue-tinted surfaces stay white with a visible border */
 .recommendation-bar .secondary, .suggest-why .secondary { background: #fff; }
-/* trip actions menu (⋯) */
+/* trip actions menu (â‹¯) */
 .menu-wrap { position: relative; flex: none; }
 .dots { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r-btn); color: var(--navy); font-size: 20px; line-height: 1; border: 1px solid transparent; }
 .dots:hover, .dots[aria-expanded=true] { background: var(--hover); border-color: var(--border); }
@@ -844,3 +844,25 @@ body.collapsed .side-team { padding: 6px; justify-content: center; }
 .form-error { border-radius: var(--r-tip); }
 /* headings in navy */
 .page-intro h1, .section-head h2, .panel h2, .suggest h2, .travel-head h1, .modal h2 { color: var(--navy); }
+
+/* NCAAway refreshed surfaces â€” scoped overrides */
+.sidebar { background: #061F44; color: #FFFFFF; border-right-color: #143D70; }
+.sidebar .brand strong, .sidebar .brand strong span { color: #FFFFFF; }
+.sidebar .brand small, .sidebar .season span, .sidebar .season small, .sidebar .side-team .brand-copy small { color: #B9CDE8; }
+.sidebar .nav-link { color: #EAF4FF; }
+.sidebar .nav-link:hover { background: #143D70; color: #FFFFFF; }
+.sidebar .nav-link.active { background: #EAF4FF; color: #061F44; }
+.sidebar .nav-link.active::before { background: #0875D1; }
+.sidebar .season strong { color: #FFFFFF; }
+.sidebar .season, .sidebar .collapse { border-top-color: #31517A; }
+.sidebar .side-team { background: #123765; border-color: #31517A; }
+.sidebar .side-team .brand-copy b { color: #FFFFFF; }
+.sidebar .side-team .side-team-label { color: #B9CDE8 !important; }
+.sidebar .brand-mark { background: #FFFFFF; color: #061F44; }
+.sidebar .nav-dot { background: #0875D1; color: #FFFFFF; }
+.sidebar .app-mark { background: #0875D1; }
+.sidebar .nav-link:focus-visible { outline-color: #EAF4FF !important; }
+/* Slightly tinted surrounding surfaces; content cards stay white. */
+.shell { background: #F0F5FC; }
+.topbar { background: #FFFFFF; }
+.panel, .activity, .form-shell, .settings-grid section, .feed article, .composer, .next-trip, .player-trip, .package-row { box-shadow: 0 2px 10px rgba(6,31,68,.035); }
