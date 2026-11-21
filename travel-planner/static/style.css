@@ -489,12 +489,12 @@ details.menu li { padding: 6px 0; border-top: 1px solid #eef0f1; display: flex; 
 /* auth + onboarding */
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: 1fr minmax(380px, 520px); }
 .auth-side { background: var(--ash); color: #fff; padding: 48px 56px; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden; }
-.auth-side::after { content: "âœˆ"; position: absolute; right: -30px; bottom: -60px; font-size: 360px; color: #ffffff0a; line-height: 1; }
+.auth-side::after { content: "Ã¢Å“Ë†"; position: absolute; right: -30px; bottom: -60px; font-size: 360px; color: #ffffff0a; line-height: 1; }
 .auth-side h1 { font-size: 40px; line-height: 1.08; font-weight: 500; margin: 18px 0 14px; max-width: 520px; }
 .auth-side p { color: #dde1e4; font-size: 15px; max-width: 460px; }
 .auth-points { display: grid; gap: 14px; margin-top: 34px; max-width: 460px; }
 .auth-points li { display: flex; gap: 12px; font-size: 13px; color: #e8ebed; }
-.auth-points li::before { content: "âœ“"; color: var(--gold); font-weight: 700; }
+.auth-points li::before { content: "Ã¢Å“â€œ"; color: var(--gold); font-weight: 700; }
 .auth-main { background: #fff; display: flex; flex-direction: column; justify-content: center; padding: 48px 46px; }
 .auth-main h2 { font-size: 24px; margin: 6px 0 20px; }
 .auth-tabs { display: flex; border-bottom: 1px solid var(--line2); margin-bottom: 16px; }
@@ -636,8 +636,8 @@ details.menu li { padding: 6px 0; border-top: 1px solid #eef0f1; display: flex; 
 .rl-left { padding: 24px 0 0 8px; max-width: 560px; }
 .rl-kicker { display: flex; align-items: center; gap: 10px; font-size: 11px; font-weight: 600; letter-spacing: 2.4px; color: var(--text-2); }
 .rl-kicker i { width: 9px; height: 9px; border-radius: 50%; background: var(--rl-sage-2); box-shadow: 0 0 0 4px #e4e9d9; }
-.rl-title { font-size: clamp(46px, 5.4vw, 70px); line-height: 1.02; font-weight: 600; letter-spacing: -3px; margin: 30px 0 30px; color: var(--rl-ink); }
-.rl-title em { font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-weight: 400; letter-spacing: -1px; color: var(--rl-sage); font-size: 1.1em; }
+.rl-title { font-family: 'DM Sans', Arial, sans-serif; font-size: clamp(46px, 5.4vw, 70px); line-height: 1.02; font-weight: 800; font-style: normal; letter-spacing: -3px; margin: 30px 0 30px; color: #653A20; }
+.rl-title em { font-family: inherit; font-style: normal; font-weight: 800; letter-spacing: -1px; color: #653A20; font-size: 1.1em; background: rgba(255, 145, 0, 0.35); padding: 0 8px; border-radius: 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .rl-lede { font-size: 16px; line-height: 1.7; color: var(--rl-muted); max-width: 470px; }
 .rl-rule { display: flex; align-items: center; gap: 18px; margin: 40px 0 18px; font-size: 10px; letter-spacing: 1.6px; color: var(--rl-muted); }
 .rl-rule::after { content: ""; flex: 1; height: 1px; background: var(--rl-line); }
@@ -830,7 +830,7 @@ body.collapsed .side-team { padding: 6px; justify-content: center; }
 :focus-visible { outline: none !important; box-shadow: var(--focus) !important; }
 /* secondary buttons on blue-tinted surfaces stay white with a visible border */
 .recommendation-bar .secondary, .suggest-why .secondary { background: #fff; }
-/* trip actions menu (â‹¯) */
+/* trip actions menu (Ã¢â€¹Â¯) */
 .menu-wrap { position: relative; flex: none; }
 .dots { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r-btn); color: var(--navy); font-size: 20px; line-height: 1; border: 1px solid transparent; }
 .dots:hover, .dots[aria-expanded=true] { background: var(--hover); border-color: var(--border); }
@@ -845,7 +845,7 @@ body.collapsed .side-team { padding: 6px; justify-content: center; }
 /* headings in navy */
 .page-intro h1, .section-head h2, .panel h2, .suggest h2, .travel-head h1, .modal h2 { color: var(--navy); }
 
-/* NCAAway refreshed surfaces â€” scoped overrides */
+/* NCAAway refreshed surfaces Ã¢â‚¬â€ scoped overrides */
 .sidebar { background: #061F44; color: #FFFFFF; border-right-color: #143D70; }
 .sidebar .brand strong, .sidebar .brand strong span { color: #FFFFFF; }
 .sidebar .brand small, .sidebar .season span, .sidebar .season small, .sidebar .side-team .brand-copy small { color: #B9CDE8; }
