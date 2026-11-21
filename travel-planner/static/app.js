@@ -1478,7 +1478,7 @@ function renderChat() {
   $("#chat-input").disabled = off;
   $$("#chat-chips button").forEach((b) => (b.disabled = off));
   if (off) return fill(log, el("div", { class: "msg assistant" }, "Aivana isn't connected yet, so this panel can't answer. ",
-    isCoach() ? "Add AIVANA_API_URL and AIVANA_API_KEY to the server's .env file and restart it." : "Ask your coach."));
+    isCoach() ? "Add AIVANA_API_KEY to the server's .env file and restart it." : "Ask your coach."));
   if (!chat.length) return fill(log, el("div", { class: "msg assistant" }, isCoach()
     ? "Ask Aivana to compare packages, explain the recommendation, prepare a booking for the main planner to approve, or look up NCAA info."
     : "Ask Aivana about your trip: bus time, hotel, room, what you can eat, or RSVP."));

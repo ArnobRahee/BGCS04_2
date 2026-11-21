@@ -2,7 +2,7 @@
 context (the team's trips and NCAA info) and carries out two safe actions Aivana may ask for:
   - main planner: request_booking -> PENDING_APPROVAL bookings (a person still clicks Approve)
   - player:       rsvp            -> going / maybe / not_going
-It never approves or pays for anything. If Aivana isn't connected (no AIVANA_API_URL/KEY) or a
+It never approves or pays for anything. If Aivana isn't connected (no AIVANA_API_KEY) or a
 call fails, the reply says so; there are no made-up answers. Players' context never has prices.
 """
 import json
@@ -58,7 +58,7 @@ class ChatAssistant:
             return {"reply": "Ask something about your trips or your team.", "action": None, "source": "none"}
         if not self.aivana.configured:
             return {"reply": "Aivana isn't connected yet, so the assistant can't answer. "
-                             + ("Add AIVANA_API_URL and AIVANA_API_KEY to the server's .env file." if profile["role"] == "coach"
+                             + ("Add AIVANA_API_KEY to the server's .env file and restart it." if profile["role"] == "coach"
                                 else "Ask your coach."), "action": None, "source": "not_connected"}
         ctx = self.context(profile, team, focus_trip_id)
         try:
@@ -82,9 +82,13 @@ class ChatAssistant:
             + ("Only the main planner may prepare bookings; you_are_main_planner tells you if this user is. " if role == "coach" else "")
             + ACTIONS_HELP[role]
             + ' Reply ONLY with JSON: {"reply": "<text for the user>", "action": null or the action object}.'
-            + "\nContext: " + json.dumps(ctx, default=str)
         )
-        raw = self.aivana.complete([{"role": "system", "content": system}] + messages)
+        # Aivana caps the system prompt at 8,000 characters, so the team's data travels with the
+        # latest question instead (messages may be much longer).
+        convo = [dict(m) for m in messages]
+        convo[-1]["content"] = ("Context (JSON, the app's current data):\n" + json.dumps(ctx, default=str)
+                                + "\n\nQuestion: " + convo[-1]["content"])
+        raw = self.aivana.complete([{"role": "system", "content": system}] + convo)
         try:
             parsed = json.loads(_strip_fences(raw))
             return str(parsed.get("reply") or "").strip(), parsed.get("action")

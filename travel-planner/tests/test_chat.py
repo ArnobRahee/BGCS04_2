@@ -24,7 +24,6 @@ def env(monkeypatch):
 def connect(monkeypatch, planner, reply):
     """Pretend Aivana is connected; `reply` is a function of the messages sent to it."""
     monkeypatch.setattr(planner.aivana, "api_key", "k")
-    monkeypatch.setattr(planner.aivana, "api_url", "https://example.invalid")
     sent = []
     monkeypatch.setattr(planner.aivana, "complete", lambda msgs: (sent.append(msgs), reply(msgs))[1])
     return sent
@@ -68,8 +67,8 @@ def test_context_sent_to_aivana_has_ncaa_and_player_context_has_no_money(env, mo
     c, db, planner = env
     sent = connect(monkeypatch, planner, lambda msgs: json.dumps({"reply": "You're 9-2.", "action": None}))
     assert say(c, C, "what's our record?")["reply"] == "You're 9-2."
-    system = sent[-1][0]["content"]
-    assert '"record": "9-2"' in system and "Aivana" not in system.split("Context:")[0]
+    system, question = sent[-1][0]["content"], sent[-1][-1]["content"]
+    assert '"record": "9-2"' in question and "Aivana" not in system
     player = db.select("profiles", {"id": "demo-player-2"})[0]
     team = db.select("teams")[0]
     ctx = json.dumps(ChatAssistant(db, planner, None, planner.aivana).context(player, team), default=str)
@@ -115,3 +114,33 @@ def test_only_main_planner_books_and_can_hand_over_the_role(env):
     assert r.status_code == 403 and "main planner" in r.json["error"]
     assert c.post("/api/team/planner", headers=C, json={"profile_id": "demo-coach-id"}).status_code == 403
     assert c.get("/api/me", headers=C).json["is_main_planner"] is False
+
+
+def test_client_uses_the_official_sdk_shape():
+    """AivanaClient.complete() -> aivana.generate(messages=..., system=...) -> res.answer."""
+    from aivana_client import AivanaClient
+
+    class FakeSDK:
+        api_key = None
+        calls = []
+
+        @classmethod
+        def generate(cls, **kw):
+            cls.calls.append(kw)
+            return type("Res", (), {"answer": "Hello from Aivana"})()
+
+    client = AivanaClient(sdk=FakeSDK)
+    client.api_key = "ai_live_test"
+    out = client.complete([{"role": "system", "content": "S" * 9000}, {"role": "user", "content": "hi"},
+                           {"role": "assistant", "content": "hey"}, {"role": "user", "content": "bus time?"}])
+    assert out == "Hello from Aivana" and FakeSDK.api_key == "ai_live_test"
+    sent = FakeSDK.calls[-1]
+    assert len(sent["system"]) == 8000 and [m["role"] for m in sent["messages"]] == ["user", "assistant", "user"]
+
+
+def test_chat_context_goes_with_the_question_not_the_system_prompt(env, monkeypatch):
+    c, db, planner = env
+    sent = connect(monkeypatch, planner, lambda msgs: json.dumps({"reply": "ok", "action": None}))
+    say(c, C, "compare packages")
+    system, last = sent[-1][0]["content"], sent[-1][-1]["content"]
+    assert len(system) < 8000 and "Context (JSON" in last and last.endswith("Question: compare packages")

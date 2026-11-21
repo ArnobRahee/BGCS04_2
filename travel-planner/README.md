@@ -53,10 +53,16 @@ When Aivana isn't connected, the panel says so and answers nothing. The package 
 plain **best-value ranking** (budget, diet coverage, distance, cost) and drafts use a fill-in template;
 both are labelled as not coming from Aivana. Players' context never includes prices or budget.
 
-**Connecting Aivana:** put `AIVANA_API_KEY` and `AIVANA_API_URL` (and `AIVANA_MODEL` if needed) in
-`travel-planner/.env`. That file is in `.gitignore`: never commit it. If Aivana's API isn't
-OpenAI-style, set `AIVANA_API_STYLE=prompt` or adjust `AivanaClient.complete()` (the only place that
-knows the request format). Add the key to Render only if you want the live site to use it.
+**Connecting Aivana:** the app uses Aivana's official Python SDK (`aivana` in `requirements.txt`),
+which already knows Aivana's address and request format. Put only your key in `travel-planner/.env`:
+
+```
+AIVANA_API_KEY=ai_live_...
+```
+
+That file is in `.gitignore`: never commit it. Restart the app; `/api/health` then shows
+`"aivana": "connected"`. Add the key to Render only if you want the live site to use Aivana.
+Get keys and test prompts at https://developers.aivana.ai (Playground).
 
 ## Main planner
 
@@ -174,6 +180,5 @@ after 15 minutes idle; open the site a minute before you demo.
 
 ## Still to do
 
-- **Aivana:** add `AIVANA_API_URL` and confirm the request format (see "Connecting Aivana" above).
 - **Administrator accounts:** university + sport registration, verification and invitations (spec).
 - **Row level security policies** for direct browser access (today only the server touches data).

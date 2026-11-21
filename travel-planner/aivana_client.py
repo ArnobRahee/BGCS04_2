@@ -1,13 +1,11 @@
-"""AivanaClient: wrapper around the Aivana API.
+"""AivanaClient: talks to Aivana (https://developers.aivana.ai) through its official Python SDK
+(`pip install aivana`, Python 3.10+). The SDK knows Aivana's address and request format.
 
 Configure with environment variables (never in code):
-  AIVANA_API_URL    full endpoint URL
-  AIVANA_API_KEY    sent as "Authorization: Bearer <key>"
-  AIVANA_API_STYLE  "openai" (default): body {"model", "messages"} -> choices[0].message.content
-                    "prompt": body {"prompt"} -> "response" (or "text"/"output") field
-  AIVANA_MODEL      model name for the "openai" style (optional)
-If Aivana's API looks different, change only complete(). Aivana is the only AI in the app.
-When it isn't connected (or a call fails) nothing pretends to be AI:
+  AIVANA_API_KEY    your key, "ai_live_..." (required)
+  AIVANA_API_BASE   optional: only to point the SDK at a different Aivana deployment
+  AIVANA_EFFORT     optional: auto (default) | low | medium | high
+Aivana is the only AI in the app. When it isn't connected (or a call fails) nothing pretends to be AI:
   - recommend(): a plain best-value ranking (budget, diet coverage, distance, cost), labelled as such
   - draft_announcement(): a fill-in-the-blanks template from the booked package
 Aivana only ranks and writes text. Every number comes from CostCalc.
@@ -16,40 +14,52 @@ import json
 import os
 from datetime import datetime
 
-import requests
+SYSTEM_LIMIT = 8000          # Aivana rejects longer system prompts
 
 
 class AivanaClient:
-    def __init__(self):
+    def __init__(self, sdk=None):
         self.api_key = os.environ.get("AIVANA_API_KEY", "").strip()
-        self.api_url = os.environ.get("AIVANA_API_URL", "").strip()
-        self.style = os.environ.get("AIVANA_API_STYLE", "openai").strip().lower()
-        self.model = os.environ.get("AIVANA_MODEL", "").strip()
+        self.api_base = (os.environ.get("AIVANA_API_BASE") or os.environ.get("AIVANA_API_URL") or "").strip()
+        self.effort = os.environ.get("AIVANA_EFFORT", "").strip().lower()
+        self._sdk = sdk
 
     @property
     def configured(self) -> bool:
-        return bool(self.api_key and self.api_url)
+        return bool(self.api_key)
+
+    def _client(self):
+        sdk = self._sdk
+        if sdk is None:
+            try:
+                import aivana as sdk                      # official SDK
+            except ImportError as exc:
+                raise RuntimeError("the 'aivana' package isn't installed (pip install -r requirements.txt)") from exc
+        sdk.api_key = self.api_key
+        if self.api_base:
+            sdk.set_api_base(self.api_base)
+        return sdk
 
     def complete(self, messages: list[dict]) -> str:
-        """Send a conversation ([{role, content}]) and return the model's text."""
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        if self.style == "prompt":
-            text = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages) + "\n\nASSISTANT:"
-            body = {"prompt": text}
-        else:
-            body = {"messages": messages, "temperature": 0.3}
-            if self.model:
-                body["model"] = self.model
-        resp = requests.post(self.api_url, headers=headers, json=body, timeout=45)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Aivana returned {resp.status_code}: {resp.text[:200]}")
-        data = resp.json()
-        if self.style == "prompt":
-            return str(data.get("response") or data.get("text") or data.get("output") or "")
+        """Send a conversation ([{role, content}], roles system/user/assistant) and return Aivana's answer."""
+        sdk = self._client()
+        system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system").strip()
+        turns = [{"role": m["role"], "content": m["content"]} for m in messages if m.get("role") in ("user", "assistant")][-40:]
+        options = {"messages": turns}
+        if system:
+            options["system"] = system[:SYSTEM_LIMIT]
+        if self.effort in ("low", "medium", "high"):
+            options["effort"] = self.effort
         try:
-            return data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("Unexpected Aivana response shape; set AIVANA_API_STYLE or adjust complete()") from exc
+            res = sdk.generate(**options)
+        except Exception as exc:                          # AuthError, RateLimitError, UpstreamError, network...
+            raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+        answer = getattr(res, "answer", None)
+        if answer is None and isinstance(res, dict):
+            answer = res.get("answer")
+        if not answer:
+            raise RuntimeError("Aivana returned an empty answer")
+        return str(answer)
 
     def _post(self, prompt: str) -> str:
         """One-shot prompt that must return JSON; strips ```json fences models like to add."""

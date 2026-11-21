@@ -19,12 +19,6 @@ services:
         sync: false
       - key: AIVANA_API_KEY
         sync: false
-      - key: AIVANA_API_URL
-        sync: false
-      - key: AIVANA_API_STYLE
-        value: openai
-      - key: AIVANA_MODEL
-        sync: false
       - key: NCAA_API_URL
         value: https://ncaa-api.henrygd.me
       - key: GOOGLE_MAPS_API_KEY
