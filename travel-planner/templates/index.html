@@ -57,30 +57,34 @@
         </ul>
       </section>
       <section class="rl-hero" aria-label="One team. Every mile.">
-        <svg class="rl-art" viewBox="0 0 600 780" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-          <defs>
-            <radialGradient id="rl-glow" cx="70%" cy="18%" r="65%"><stop offset="0" stop-color="#5d7a4a" stop-opacity=".55"/><stop offset="1" stop-color="#14281b" stop-opacity="0"/></radialGradient>
-            <radialGradient id="rl-ball" cx="35%" cy="35%" r="70%"><stop offset="0" stop-color="#b8683a"/><stop offset="1" stop-color="#5b2d17"/></radialGradient>
-          </defs>
-          <rect width="600" height="780" fill="url(#rl-glow)"/>
-          <g fill="none" stroke="#e9eee2" stroke-opacity=".07" stroke-width="3">
-            <path d="M-40 640 Q300 420 640 640"/><path d="M-40 700 Q300 500 640 700"/><circle cx="300" cy="900" r="240"/>
-          </g>
-          <rect x="300" y="-20" width="300" height="140" rx="10" fill="#d9ddd2" fill-opacity=".10" stroke="#e9eee2" stroke-opacity=".25"/>
-          <g transform="translate(455 160)">
-            <ellipse rx="105" ry="22" fill="none" stroke="#d9652b" stroke-width="7"/>
-            <g stroke="#f1efe6" stroke-opacity=".75" stroke-width="2.2" fill="none">
-              <path d="M-100 6 L-70 120 L-40 230"/><path d="M-60 18 L-40 125 L-15 235"/><path d="M-20 22 L-10 128 L10 236"/>
-              <path d="M20 22 L18 128 L32 234"/><path d="M60 18 L48 124 L55 230"/><path d="M100 6 L76 118 L78 226"/>
-              <path d="M-100 6 L-40 125 L10 236"/><path d="M-60 18 L-10 128 L32 234"/><path d="M-20 22 L18 128 L55 230"/><path d="M20 22 L48 124 L78 226"/>
-              <path d="M100 6 L48 124 L10 236"/><path d="M60 18 L18 128 L-15 235"/><path d="M20 22 L-10 128 L-40 230"/><path d="M-20 22 L-40 125"/>
-            </g>
-          </g>
-          <g transform="translate(70 600)" opacity=".5">
-            <circle r="120" fill="url(#rl-ball)"/>
-            <g fill="none" stroke="#2a1409" stroke-width="4" stroke-opacity=".7"><path d="M-120 0 H120"/><path d="M0 -120 V120"/><path d="M-85 -85 Q0 0 -85 85"/><path d="M85 -85 Q0 0 85 85"/></g>
-          </g>
-        </svg>
+        <img
+    class="rl-art"
+    src="https://bgfalconmedia.com/wp-content/uploads/2023/11/A21I4578.jpg"
+    alt="Bowling Green football player celebrating"
+    style="
+        display: block;
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: 35% 50%;
+    "
+        >
+        <div
+    aria-hidden="true"
+    style="
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+            to top,
+            rgba(6,31,68,0.82) 0%,
+            rgba(6,31,68,0.30) 52%,
+            rgba(6,31,68,0.08) 100%
+        );
+        pointer-events: none;
+    "
+        ></div>
         <span class="rl-glass rl-badge"><svg class="ic"><use href="#i-shield"/></svg>COLLEGE ATHLETICS. CONNECTED.</span>
         <span class="rl-way">GAME DAY / 01</span>
         <div class="rl-hero-copy">
@@ -185,3 +189,4 @@
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
+
