@@ -49,7 +49,7 @@ def friendly_error(exc: Exception) -> str:
         return "Aivana's answer didn't match the priced packages"
     if "upstream" in low or "500" in low or "502" in low or "503" in low:
         return "Aivana had a temporary problem"
-    return "Aivana couldn't answer"
+    return "something unexpected went wrong"
 
 
 class AivanaClient:

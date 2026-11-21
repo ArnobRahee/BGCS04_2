@@ -205,6 +205,25 @@ class TravelPlanner:
         return self.db.update("trips", {"ai_recommendation": rec, "status": "PLANNING", "selected_package_no": None},
                               {"id": trip["id"]})[0]
 
+    # -- deleting ----------------------------------------------------------
+    def delete_trip(self, trip: dict) -> dict:
+        """Remove a trip and everything that hangs off it, children first so nothing is left pointing
+        at it (Supabase would cascade too; doing it here keeps the in-memory demo identical).
+        Bookings are mock records: nothing external is cancelled."""
+        tid = trip["id"]
+        anns = [a["id"] for a in self.db.select("announcements", {"trip_id": tid})]
+        removed = {"packages": len(self.packages(tid)), "bookings": len(self.db.select("bookings", {"trip_id": tid})),
+                   "announcements": len(anns), "rsvps": len(self.db.select("trip_participants", {"trip_id": tid}))}
+        if anns:
+            self.db.delete("announcement_reads", {"announcement_id": anns})
+            self.db.delete("saved_items", {"announcement_id": anns})
+            self.db.delete("announcements", {"trip_id": tid})
+        self.db.delete("saved_items", {"trip_id": tid})
+        for table in ("bookings", "trip_participants", "trip_packages"):
+            self.db.delete(table, {"trip_id": tid})
+        self.db.delete("trips", {"id": tid, "team_id": trip["team_id"]})
+        return removed
+
     # -- what-if changes (proposed by Aivana in chat, applied only when the coach confirms) ----
     EDITABLE = ("nights", "meals", "budget", "num_players", "num_coaches", "num_staff", "depart_after")
 

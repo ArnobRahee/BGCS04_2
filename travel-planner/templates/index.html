@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rally · Team Travel Planner</title>
+  <title>NCAAway · Team Travel Planner</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23545a61'/%3E%3Crect x='3' y='3' width='10' height='10' fill='none' stroke='%23d7b660' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div id="flash" class="flash" role="status" hidden><span id="flash-text"></span><button type="button" id="flash-close" aria-label="Dismiss">×</button></div>
 
-  <!-- Sign in (Rally landing screen) -->
+  <!-- Sign in (NCAAway landing screen) -->
   <div id="view-auth" class="rl-page" hidden>
     <svg width="0" height="0" style="position:absolute" aria-hidden="true">
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
@@ -23,7 +23,7 @@
       <symbol id="i-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4Z"/></symbol>
     </svg>
     <header class="rl-head">
-      <div class="rl-logo" aria-label="rally"><span class="rl-bars" aria-hidden="true"><i></i><i></i><i></i></span>rally<b>.</b></div>
+      <div class="rl-logo" aria-label="NCAAway"><span class="rl-bars" aria-hidden="true"><i></i><i></i><i></i></span>NCAA<b>way</b></div>
       <p class="rl-tagline">THE HOME BASE FOR YOUR AWAY GAMES</p>
       <p class="rl-new"><span>New to the team?</span> <button type="button" class="rl-link" data-create="planner">Create an account <svg class="ic"><use href="#i-arrow"/></svg></button></p>
     </header>
@@ -49,7 +49,7 @@
           <button type="button" class="rl-chip" data-demo="demo-player">Player demo</button>
           <small>Sample data, nothing saved</small>
         </div>
-        <p class="rl-more">Not on Rally yet? <button type="button" class="rl-link" data-create="planner">Find your home base <svg class="ic"><use href="#i-arrow"/></svg></button></p>
+        <p class="rl-more">Not on NCAAway yet? <button type="button" class="rl-link" data-create="planner">Find your home base <svg class="ic"><use href="#i-arrow"/></svg></button></p>
         <ul class="rl-features">
           <li><svg class="ic"><use href="#i-send"/></svg>Seamless travel</li>
           <li><svg class="ic"><use href="#i-bed"/></svg>Team-ready stays</li>
@@ -82,7 +82,7 @@
           </g>
         </svg>
         <span class="rl-glass rl-badge"><svg class="ic"><use href="#i-shield"/></svg>COLLEGE ATHLETICS. CONNECTED.</span>
-        <span class="rl-way">THE RALLY WAY / 01</span>
+        <span class="rl-way">GAME DAY / 01</span>
         <div class="rl-hero-copy">
           <p class="rl-eyebrow">FOR THE NAME ON THE FRONT.</p>
           <h2>One team.<br>Every mile.</h2>
@@ -129,7 +129,9 @@
   <!-- App -->
   <div id="view-app" hidden>
     <aside class="sidebar" id="sidebar">
-      <div class="brand"><div class="brand-mark" id="brand-mark">TT</div><div class="brand-copy"><strong>rally.</strong><small id="brand-team"></small></div></div>
+      <!-- Application brand (NCAAway) is separate from the selected team below it -->
+      <div class="brand" aria-label="NCAAway"><span class="app-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 19V5l8 9V5M20 5v14l-8-9v9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="brand-copy"><strong>NCAA<span>way</span></strong></div></div>
+      <div class="side-team" title="Selected team"><span class="brand-mark" id="brand-mark">?</span><div class="brand-copy"><small class="side-team-label">Selected team</small><b id="brand-team"></b><small id="brand-sport"></small></div></div>
       <nav id="nav" aria-label="Primary navigation"></nav>
       <div class="side-bottom">
         <div class="season" id="season"></div>

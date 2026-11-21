@@ -177,7 +177,7 @@ function confirmModal(title, text, okLabel, danger = false) {
 }
 
 /* ================= sign in ================= */
-/* The Rally landing screen. "Sign in as ..." opens a sign-in pop-up. While Supabase isn't configured
+/* The NCAAway landing screen. "Sign in as ..." opens a sign-in pop-up. While Supabase isn't configured
    (demo deployments) the pop-up is a preview: its form explains that sign-in isn't switched on, and
    its "Demo mode" button opens the demo for that role. With Supabase configured it signs in for real. */
 const ROLE_INFO = {
@@ -254,7 +254,7 @@ function openSignIn(roleKey, mode = "signin") {
         el("div", {}, el("b", {}, creating ? `Create a ${role.name} account` : `Sign in as ${role.name === "Player" ? "a Player" : "a Team Planner"}`), el("small", {}, role.tag))),
       google, el("div", { class: "rl-or" }, el("span", {}, "or with your school email")), form, note,
       demoBtn ? el("div", { class: "rl-demo-row" }, demoBtn, el("small", {}, "Explore with sample data. Nothing is saved.")) : null,
-      el("p", { class: "rl-switch" }, creating ? "Already on Rally? " : "New to Rally? ",
+      el("p", { class: "rl-switch" }, creating ? "Already on NCAAway? " : "New to NCAAway? ",
         el("button", { type: "button", class: "rl-link", onclick: () => { mode = creating ? "signin" : "create"; say(""); draw(); } }, creating ? "Sign in" : "Create an account")),
       !live ? el("p", { class: "rl-preview" }, "Preview: real sign-in turns on once the team's Supabase account is connected.") : null);
   }
@@ -267,7 +267,7 @@ function openSignIn(roleKey, mode = "signin") {
       }) }, "Resend email"));
   }
   draw();
-  m = modal(mode === "create" ? "Join Rally" : "Welcome back", body, { eyebrow: "RALLY" });
+  m = modal(mode === "create" ? "Join NCAAway" : "Welcome back", body, { eyebrow: "NCAAWAY" });
   m.box.classList.add("rl-modal");
 }
 
@@ -278,7 +278,7 @@ function authReturn() {
   if (!/access_token=|error_description=/.test(h)) return;
   const params = new URLSearchParams(h.replace(/^#/, ""));
   if (params.get("error_description")) flash(params.get("error_description").replace(/\+/g, " ") + ". Try signing in again.", "error");
-  else if (params.get("type") === "signup") flash("Email confirmed. Welcome to Rally!", "ok");
+  else if (params.get("type") === "signup") flash("Email confirmed. Welcome to NCAAway!", "ok");
   history.replaceState(null, "", location.pathname + "#/home");
 }
 
@@ -395,7 +395,7 @@ const ident = () => (state.me && state.me.team && state.me.team.identity) || nul
 function teamBadge(i, cls) {
   const box = el("span", { class: cls, "aria-hidden": "true" }, i ? i.initials : "?");
   if (i && i.logo) {                                  // NCAA's own logo for this school; initials if it fails
-    const img = el("img", { src: i.logo, alt: "", loading: "lazy" });
+    const img = el("img", { src: i.logo, alt: "" });
     img.addEventListener("load", () => { box.textContent = ""; box.classList.add("has-logo"); box.append(img); });
     img.addEventListener("error", () => img.remove());
   }
@@ -405,7 +405,8 @@ function paintIdentity() {
   const i = ident();
   const sportLine = i && i.linked ? [i.sport_name, i.division_name].filter(Boolean).join(" · ") : "NCAA program not linked yet";
   $("#brand-mark").replaceWith(Object.assign(teamBadge(i, "brand-mark"), { id: "brand-mark" }));
-  $("#brand-team").textContent = i ? [i.display_name, i.linked ? i.sport_name : null].filter(Boolean).join(" · ") : "No team selected";
+  $("#brand-team").textContent = i ? i.display_name : "No team selected";
+  $("#brand-sport").textContent = i && i.linked ? i.sport_name : "";
   $("#team-mark").replaceWith(Object.assign(teamBadge(i, "n-mark"), { id: "team-mark" }));
   $("#team-title").textContent = i ? i.display_name : "No team selected";
   $("#team-sub").textContent = sportLine;
@@ -538,10 +539,66 @@ function statusPill(t) {
 }
 
 function tripList(trips, onOpen) {
-  return el("div", { class: "compact-list" }, trips.map((t) => el("button", { type: "button", onclick: () => onOpen(t) },
-    el("b", {}, `${fmt(t.match_at, { month: "short" }).toUpperCase()} ${fmt(t.match_at, { day: "2-digit" })}\n${timeOnly(t.match_at)}`),
-    el("span", {}, el("strong", {}, `at ${t.opponent}`), el("small", {}, [t.venue_name, cityOf(t.venue_address)].filter(Boolean).join(" · "))),
-    statusPill(t), el("i", { "aria-hidden": "true" }, "→"))));
+  return el("div", { class: "compact-list" }, trips.map((t) => el("div", { class: "trip-line" },
+    el("button", { type: "button", class: "trip-open", onclick: () => onOpen(t) },
+      el("b", {}, `${fmt(t.match_at, { month: "short" }).toUpperCase()} ${fmt(t.match_at, { day: "2-digit" })}\n${timeOnly(t.match_at)}`),
+      el("span", {}, el("strong", {}, `at ${t.opponent}`), el("small", {}, [t.venue_name, cityOf(t.venue_address)].filter(Boolean).join(" · "))),
+      statusPill(t), el("i", { "aria-hidden": "true" }, "→")),
+    isCoach() ? tripMenu(t) : null)));
+}
+
+/* ---------- trip actions menu (⋯) and deletion ---------- */
+function tripMenu(t, { label = "⋯" } = {}) {
+  const wrap = el("div", { class: "menu-wrap" });
+  const btn = el("button", { type: "button", class: "dots", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `Actions for the ${t.opponent} trip` }, label);
+  const menu = el("div", { class: "menu-pop", role: "menu", hidden: true },
+    el("button", { type: "button", role: "menuitem", onclick: () => go("trips/" + t.id) }, "Open trip"),
+    el("button", { type: "button", role: "menuitem", onclick: () => go("itinerary/" + t.id) }, "View itinerary"),
+    el("button", { type: "button", role: "menuitem", class: "danger-item", disabled: !state.me.is_main_planner,
+      title: state.me.is_main_planner ? null : plannerOnlyNote(), onclick: () => { close(); deleteTrip(t); } }, "Delete trip"));
+  const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); document.removeEventListener("click", outside, true); };
+  const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!menu.hidden) return close();
+    menu.hidden = false; btn.setAttribute("aria-expanded", "true");
+    document.addEventListener("click", outside, true);
+    menu.querySelector("button").focus();
+  });
+  wrap.addEventListener("keydown", (e) => { if (e.key === "Escape") { close(); btn.focus(); } });
+  return add(wrap, btn, menu);
+}
+
+// Confirm, then DELETE. The trip stays until the server confirms; errors keep the dialog open for a retry.
+function deleteTrip(t) {
+  const booked = t.status === "BOOKED" || t.status === "AWAITING_APPROVAL";
+  const extra = [
+    booked ? `Its ${t.status === "BOOKED" ? "simulated bookings and room assignments" : "pending booking requests"} will be removed (no real reservation exists, so nothing is cancelled anywhere).` : null,
+    t.published ? "It's published: players will no longer see this itinerary, and its announcements will be removed." : null,
+    "RSVPs for this trip will be removed."].filter(Boolean);
+  const err = el("p", { class: "form-error", role: "alert", hidden: true });
+  const del = el("button", { type: "button", class: "danger" }, "Delete trip");
+  const cancel = el("button", { type: "button", class: "secondary", onclick: () => m.close() }, "Cancel");
+  del.addEventListener("click", async () => {
+    if (del.disabled) return;
+    del.disabled = cancel.disabled = true; del.textContent = "Deleting...";
+    try {
+      await api(`/api/trips/${t.id}`, { method: "DELETE" });
+      m.close();
+      forget("/api/suggestions"); state.trips = null; state.tripId = null;
+      flash(`Deleted the ${t.opponent} trip.`, "ok");
+      const page = location.hash.replace(/^#\/?/, "").split("/")[0];
+      if (page === "trips" && location.hash.includes(t.id) || page === "itinerary") go("trips"); else route();
+    } catch (e) {
+      if (e.status === 404) { m.close(); state.trips = null; flash("That trip was already deleted.", "info"); return go("trips"); }
+      err.textContent = `Couldn't delete the trip: ${e.message}. It hasn't been removed; you can try again.`; err.hidden = false;
+      del.disabled = cancel.disabled = false; del.textContent = "Delete trip";
+    }
+  });
+  const m = modal("Delete this trip?", el("div", {},
+    el("p", { class: "modal-copy" }, `This will remove the ${t.opponent} trip (${dayShort(t.match_at)}) and its planning information. This action cannot be undone.`),
+    extra.length ? el("ul", { class: "warn-list" }, extra.map((x) => el("li", {}, x))) : null,
+    err, el("div", { class: "row between" }, cancel, del)), { eyebrow: "DELETE TRIP" });
 }
 
 /* ================= COACH: home ================= */
@@ -725,7 +782,7 @@ async function coachTrip(id) {
     el("div", {}, el("button", { type: "button", class: "back-link", onclick: () => go("trips") }, "← My trips"),
       el("h1", {}, `${t.opponent} · ${dayShort(t.match_at)}`),
       el("p", {}, `${t.venue_name}${cityOf(t.venue_address) ? ", " + cityOf(t.venue_address) : ""} · ${when(t.match_at)}`), el("p", {}, brief)),
-    el("div", {}, statusPill(t), el("button", { type: "button", class: "assistant-btn", onclick: openChat }, "✦ Refine with Aivana"))));
+    el("div", { class: "head-actions" }, statusPill(t), el("button", { type: "button", class: "assistant-btn", onclick: openChat }, "✦ Refine with Aivana"), tripMenu(t))));
   if (t.status === "PLANNING") add(wrap, ...planningView(t));
   else add(wrap, statusView(t));
   return wrap;
@@ -1568,7 +1625,8 @@ async function itinerary(id) {
     el("div", {}, el("span", { class: "eyebrow" }, `${t.opponent} · ${dayShort(t.match_at)}`), el("h1", {}, "Trip itinerary"),
       el("p", {}, isCoach() ? (t.published ? "Shared with players" : src && src.final ? "Team planner view · not shared with players yet" : "Draft based on the recommended package") : t.published ? "From your team planner's published plan" : "Your team planner hasn't published the travel plan yet")),
     el("div", { class: "header-buttons" }, chooser, el("button", { type: "button", class: "secondary no-print", onclick: () => window.print() }, "Print / save PDF"),
-      isCoach() ? el("button", { type: "button", class: "primary", onclick: () => go("trips/" + t.id) }, t.published ? "Open trip" : "Open trip to publish") : null)));
+      isCoach() ? el("button", { type: "button", class: "primary", onclick: () => go("trips/" + t.id) }, t.published ? "Open trip" : "Open trip to publish") : null,
+      isCoach() ? tripMenu(t) : null)));
   add(page, el("div", { class: "publish-banner" + (t.published ? " live" : "") }, el("b", {}, t.published ? "● LIVE ITINERARY" : "○ DRAFT ITINERARY"),
     el("span", {}, t.published ? "Players can see everything below." : isCoach() ? "Only team planners can see the travel items until you publish the plan." : "Only the game is shown until your team planner publishes the plan.")));
   let open = 0;

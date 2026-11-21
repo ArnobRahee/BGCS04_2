@@ -81,6 +81,24 @@ def ws():
     return Workspaces(DB, ncaa, geocoder, new_join_code)
 
 
+DEMO_COACH, DEMO_PLAYER = "demo-coach", "demo-player"
+
+
+def demo_player_follows():
+    """Demo preview only: the top bar's Team Planner / Player toggle switches between two demo
+    accounts. When the demo planner changes team, the demo player account joins and selects the same
+    team, so the Player preview shows that team. It is still a separate account with player rights:
+    it only sees published information. Real (Supabase) accounts are never touched."""
+    if not DEMO or not hasattr(DB, "users"):
+        return
+    coach, player = DB.users.get(DEMO_COACH), DB.users.get(DEMO_PLAYER)
+    if not coach or not player or g.profile["id"] != coach["id"]:
+        return
+    team_id = DB.select("profiles", {"id": coach["id"]})[0]["team_id"]
+    ws().add_member(team_id, player["id"], "player")
+    DB.update("profiles", {"team_id": team_id}, {"id": player["id"]})
+
+
 @app.errorhandler(PermissionError)
 def forbidden(exc):
     return jsonify({"error": str(exc)}), 403
@@ -296,6 +314,17 @@ def update_trip(trip_id):
     """Apply what-if changes the coach confirmed, then re-price. Never books anything."""
     trip = my_trip(trip_id)
     return jsonify(planner.coach_view(planner.apply_changes(trip, planner.team(trip["team_id"]), body().get("changes"))))
+
+
+@app.delete("/api/trips/<trip_id>")
+@coach_only
+def delete_trip(trip_id):
+    """Delete a trip at any stage. Only the team's main planner, and only a trip of the selected team
+    (another team's trip is "not found"). Mock bookings are simply removed."""
+    trip = my_trip(trip_id)
+    require_main_planner()
+    removed = planner.delete_trip(trip)
+    return jsonify({"deleted": trip["id"], "removed": removed})
 
 
 @app.post("/api/trips/<trip_id>/select")
@@ -576,6 +605,7 @@ def link_team():
         pass
     current = planner.team(g.profile["team_id"])
     result = ws().choose_program(g.profile, current, sport, division, seo, name or seo, long_name)
+    demo_player_follows()
     return jsonify({**result, "identity": identity(result["team"])})
 
 
@@ -591,6 +621,7 @@ def my_teams():
 def select_team():
     """Switch the selected team. Membership is checked here, not in the browser."""
     profile = ws().select(g.profile, body().get("team_id"))
+    demo_player_follows()
     return jsonify({"profile": profile, "identity": identity(planner.team(profile["team_id"]))})
 
 
