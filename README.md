@@ -7,3 +7,28 @@ works, the demo script and known limitations are in that README.
 - Run locally: `cd travel-planner && pip install -r requirements.txt && python app.py && open http://localhost:5000/`
 
 - Tests: `cd travel-planner && pip install -r requirements-dev.txt && python -m pytest -q tests`
+
+# Aivana features used
+
+Every Aivana call goes through the backend (`travel-planner/aivana_client.py`, official `aivana` Python SDK).
+
+| Feature | Where | Details |
+|---|---|---|
+| **Structured output (JSON Schema)** | Trip request parsing | "At Toledo Dec 5 at 7pm, 22 players, 3 coaches, leave after 2pm, $8,000" → opponent, date, counts, departure limit, nights, budget. Fields not stated come back `null`; the planner checks the form before saving |
+| **Structured output (JSON Schema)** | Package recommendation | `package_no` is an `enum` of the package IDs the app actually priced, plus a `reason`. An invented or invalid ID is rejected and the app falls back to its own best-value ranking, clearly labelled |
+| **Structured output (JSON Schema)** | Which game to plan next | `game_id` is an `enum` of upcoming away games that the code has already filtered (future, away, not yet planned) |
+| **Structured output (JSON Schema)** | Players' announcement | Title and body written only from the booked facts; no money mentioned |
+| **Multi-turn chat** | "Ask Aivana" panel | Answers from the team's own data, which is sent as context. It can prepare a booking request (main planner only) or propose a what-if change |
+| **Web search** | "Ask Aivana" panel | For outside questions; those answers are labelled "From the web:" |
+
+**The model never does the math.** Rooms, buses, meals, totals, budget checks, distances, departure
+times, sorting and the three highlighted options are all computed in code (`cost_calc.py`). Aivana
+only chooses among IDs the app gives it, and the app displays costs from its own data.
+
+**Tokens and errors:**
+- Prompts are kept short; only the data needed for the question is sent, and no PDFs are used.
+- Rate limits, an empty balance or spend limit, a bad key, timeouts and malformed output each get a
+  plain-language message.
+- When Aivana is unavailable, the app keeps working with labelled fallbacks.
+
+---
