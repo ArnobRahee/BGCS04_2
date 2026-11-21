@@ -1,19 +1,26 @@
-"""Help chatbot ("Ask Aivana"): answers questions about trips, teams and NCAA data, and can
-take two safe actions:
-  - coach:  request_booking -> creates PENDING_APPROVAL bookings (the coach still clicks Approve)
-  - player: rsvp            -> going / maybe / not_going
-It never approves or pays for anything. With an Aivana key the model writes the reply and picks
-the action (as JSON); without one, a small rule-based fallback handles common questions.
-Players' context never includes prices or budget.
+"""Chat panel backend. Every answer comes from your Aivana API: this module only builds the
+context (the team's trips and NCAA info) and carries out two safe actions Aivana may ask for:
+  - main planner: request_booking -> PENDING_APPROVAL bookings (a person still clicks Approve)
+  - player:       rsvp            -> going / maybe / not_going
+It never approves or pays for anything. If Aivana isn't connected (no AIVANA_API_KEY) or a
+call fails, the reply says so; there are no made-up answers. Players' context never has prices.
 """
 import json
+import logging
 import re
 
+from aivana_client import friendly_error
 from ncaa_client import NCAAError, SPORTS
 from travel_planner import PlanError
 
+log = logging.getLogger("aivana")
+
 ACTIONS_HELP = {
-    "coach": 'To prepare a booking reply with {"type": "request_booking", "trip_id": "<id>", "package_no": <n>}.',
+    "coach": ('To prepare a booking reply with {"type": "request_booking", "trip_id": "<id>", "package_no": <n>}. '
+              'For "what if" questions about a trip that is still PLANNING (more nights, a different budget, fewer players, '
+              'fewer meals, a later departure) don\'t estimate anything: reply with {"type": "propose_change", "trip_id": "<id>", '
+              '"changes": {...}} using only nights, meals, budget, num_players, num_coaches, num_staff or depart_after '
+              '(ISO date-time). The app prices it and the coach decides whether to apply it.'),
     "player": 'To RSVP reply with {"type": "rsvp", "trip_id": "<id>", "rsvp": "going|maybe|not_going"}.',
 }
 
@@ -29,36 +36,74 @@ class ChatAssistant:
                "team": {"name": team["name"], "sport": SPORTS.get(team.get("sport") or "", {}).get("name"),
                         "division": team.get("division"), "ncaa_school": team.get("ncaa_name")},
                "focus_trip_id": focus_trip_id, "trips": []}
+        if profile["role"] == "coach":
+            ctx["you"]["you_are_main_planner"] = team.get("owner_id") == profile["id"]
+        if team.get("ncaa_seo") and self.ncaa is not None:
+            try:
+                ctx["ncaa"] = {"summary": self.ncaa.team_summary(team["sport"], team["division"], team.get("ncaa_name") or ""),
+                               "games": [{k: g.get(k) for k in ("start_date", "start_time", "is_away", "state", "network")}
+                                         | {"opponent": (g.get("opponent") or {}).get("short")}
+                                         for g in self.ncaa.team_games(team["sport"], team["division"], team["ncaa_seo"])[:5]]}
+            except NCAAError as exc:
+                ctx["ncaa"] = {"error": str(exc)}
+        coach = profile["role"] == "coach"
         for t in trips:
-            if profile["role"] == "coach":
-                item = {"trip_id": t["id"], "opponent": t["opponent"], "venue": t["venue_name"], "match_at": t["match_at"],
-                        "status": t["status"], "budget": t["budget"], "travelers": t["num_players"] + t["num_coaches"] + t["num_staff"],
-                        "ai_pick": t.get("ai_recommendation"), "selected_package": t.get("selected_package_no"),
-                        "packages": [_pkg_brief(p) for p in self.planner.packages(t["id"])[:5]]}
+            if coach:
+                item = {"trip_id": t["id"], "opponent": t["opponent"], "venue": t["venue_name"], "venue_address": t.get("venue_address"),
+                        "match_at": t["match_at"], "status": t["status"], "published_to_players": t.get("published"),
+                        "budget": t["budget"], "nights": t["nights"], "team_meals": t["meals"],
+                        "travelers": {"players": t["num_players"], "coaches": t["num_coaches"], "staff": t["num_staff"]},
+                        "diet_needs": t.get("diet_tags") or [],
+                        "recommendation": t.get("ai_recommendation"), "selected_package": t.get("selected_package_no"),
+                        "priced_packages": [_pkg_brief(p) for p in self.planner.packages(t["id"])]}
             else:
                 item = self.planner.player_view(t, profile)
                 item = {k: v for k, v in item.items() if k not in ("venue_lat", "venue_lng")}
                 item["trip_id"] = item.pop("id")
+            item["area"] = self._area(t, coach)
             ctx["trips"].append(item)
+        _fit(ctx)
+        ctx["announcements"] = [{"title": a["title"], "body": (a.get("body") or "")[:600], "posted": a.get("created_at")}
+                                for a in self.db.select("announcements", {"team_id": team["id"]}, order="created_at.desc", limit=5)]
         return ctx
+
+    def _area(self, trip, coach):
+        """Every hotel and restaurant the planner knows near the venue (not just the priced packages),
+        so "closest hotel" or "is there a halal place" questions are answered from real data."""
+        data, lat, lng = self.planner.data, float(trip["venue_lat"]), float(trip["venue_lng"])
+        diets = trip.get("diet_tags") or []
+        hotels = []
+        for h in data.hotels_near(lat, lng)[:12]:
+            row = {k: h.get(k) for k in ("name", "address", "km_to_venue", "drive_min_to_venue", "stars", "rating", "amenities")}
+            if coach:
+                row.update({"price_per_night": h.get("price_per_night"), "price_is_estimate": bool(h.get("price_estimated")),
+                            "rooms_available": h.get("rooms_available")})
+            hotels.append({k: v for k, v in row.items() if v not in (None, "", [])})
+        rests = []
+        for r in data.restaurants_near(lat, lng)[:12]:
+            row = {"name": r["name"], "cuisine": r.get("cuisine"), "km_to_venue": r.get("km_to_venue"),
+                   "halal_certified": r.get("halal_certified"), "no_main_dish_for": data.missing_diets(r["id"], diets)}
+            if coach:
+                row.update({"price_per_person": r.get("price_per_person"), "group_capacity": r.get("group_capacity")})
+            rests.append(row)
+        return {"hotels_near_venue_by_distance": hotels, "restaurants_near_venue_by_distance": rests}
 
     # -- entry point -----------------------------------------------------------
     def handle(self, profile, team, messages, focus_trip_id=None):
         messages = [m for m in messages if m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()][-12:]
         if not messages or messages[-1]["role"] != "user":
-            return {"reply": "Ask me something about your trips or your team.", "source": "local"}
+            return {"reply": "Ask something about your trips or your team.", "action": None, "source": "none"}
+        if not self.aivana.configured:
+            return {"reply": "Aivana isn't connected yet, so the assistant can't answer. "
+                             + ("Add AIVANA_API_KEY to the server's .env file and restart it." if profile["role"] == "coach"
+                                else "Ask your team planner."), "action": None, "source": "not_connected"}
         ctx = self.context(profile, team, focus_trip_id)
-        if self.aivana.configured:
-            try:
-                reply, action = self._ask_ai(profile, ctx, messages)
-                source = "aivana"
-            except Exception as exc:                                   # fall back rather than fail
-                reply, action = self._local(profile, team, ctx, messages[-1]["content"])
-                reply += f"\n\n(Aivana was unavailable: {exc}. Answered locally.)"
-                source = "local"
-        else:
-            reply, action = self._local(profile, team, ctx, messages[-1]["content"])
-            source = "local"
+        try:
+            reply, action = self._ask_ai(profile, ctx, messages)
+        except Exception as exc:
+            log.warning("Aivana chat failed: %s: %s", type(exc).__name__, exc)
+            return {"reply": f"Aivana couldn't answer just now: {friendly_error(exc)}. Nothing was changed.", "action": None, "source": "error"}
+        source = "aivana"
         result = self._run_action(profile, team, action) if action else None
         if result:
             reply = (reply + "\n\n" if reply else "") + result["message"]
@@ -68,15 +113,26 @@ class ChatAssistant:
     def _ask_ai(self, profile, ctx, messages):
         role = profile["role"]
         system = (
-            "You are Aivana, the travel assistant for a college sports team's away games. Be brief and friendly. "
-            "Answer only from the JSON context; if something isn't there, say so. Never invent prices, times or hotels. "
+            "You answer questions inside a college sports team's away-game travel planner. Be brief and friendly. "
+            "You have two sources. (1) TEAM DATA: the JSON context sent with the question. It is the only source for "
+            "this team's trips, packages, prices, bookings, rooms, bus times, roster and announcements; never contradict "
+            "it or add details to it. priced_packages are the hotel+restaurant combinations the planner priced; "
+            "area lists every hotel and restaurant the planner knows near the venue, sorted by distance. "
+            "(2) WEB SEARCH: use it for general facts that are not in the team data (weather, other teams and coaches, "
+            "rankings news, local places, travel rules). Start that part with 'From the web:'. "
+            "If neither source has the answer, say you don't know. Never guess numbers, times, names or prices. "
             + ("Never mention money, prices or budget. " if role == "player" else "")
-            + "You cannot approve or pay for bookings: the coach approves on the trip page. "
+            + "You cannot approve or pay for bookings: the team's main planner approves on the trip page. "
+            + ("Only the main planner may prepare bookings; you_are_main_planner tells you if this user is. " if role == "coach" else "")
             + ACTIONS_HELP[role]
             + ' Reply ONLY with JSON: {"reply": "<text for the user>", "action": null or the action object}.'
-            + "\nContext: " + json.dumps(ctx, default=str)
         )
-        raw = self.aivana.complete([{"role": "system", "content": system}] + messages)
+        # Aivana caps the system prompt at 8,000 characters, so the team's data travels with the
+        # latest question instead (messages may be much longer).
+        convo = [dict(m) for m in messages]
+        convo[-1]["content"] = ("Context (JSON, the app's current data):\n" + json.dumps(ctx, default=str)
+                                + "\n\nQuestion: " + convo[-1]["content"])
+        raw = self.aivana.complete([{"role": "system", "content": system}] + convo, web_search=self.aivana.web_search)
         try:
             parsed = json.loads(_strip_fences(raw))
             return str(parsed.get("reply") or "").strip(), parsed.get("action")
@@ -93,6 +149,8 @@ class ChatAssistant:
         except PlanError:
             return {"type": kind, "ok": False, "message": "I couldn't find that trip, so I didn't change anything."}
         if kind == "request_booking" and profile["role"] == "coach":
+            if team.get("owner_id") != profile["id"]:
+                return {"type": kind, "ok": False, "message": "Only the team's main planner can prepare bookings."}
             try:
                 no = int(action.get("package_no"))
                 if trip["status"] == "AWAITING_APPROVAL":
@@ -104,6 +162,13 @@ class ChatAssistant:
             return {"type": kind, "ok": True, "trip_id": trip["id"],
                     "message": f"Done: package {no} for the {trip['opponent']} trip is waiting for your approval. "
                                "Nothing is reserved until you click Approve on the trip page."}
+        if kind == "propose_change" and profile["role"] == "coach":
+            try:
+                preview = self.planner.preview_changes(trip, team, action.get("changes"))
+            except PlanError as exc:
+                return {"type": kind, "ok": False, "message": f"I can't price that change: {exc}"}
+            return {"type": kind, "ok": True, "trip_id": trip["id"], "changes": preview["changes"],
+                    "preview": preview, "message": _describe_preview(trip, preview)}
         if kind == "rsvp" and profile["role"] == "player":
             choice = action.get("rsvp")
             if choice not in ("going", "maybe", "not_going"):
@@ -117,103 +182,59 @@ class ChatAssistant:
                     "message": f"RSVP saved for the {trip['opponent']} trip: {choice.replace('_', ' ')}."}
         return None
 
-    # -- rule-based fallback -----------------------------------------------------
-    def _local(self, profile, team, ctx, text):
-        t = text.lower()
-        trips = ctx["trips"]
-        trip = _pick_trip(trips, t, ctx.get("focus_trip_id"))
-        coach = profile["role"] == "coach"
 
-        if re.search(r"\b(help|what can you do|hi|hello)\b", t):
-            return (("I can compare packages, explain Aivana's pick, prepare a booking (\"book package 2\"), "
-                     "and tell you your team's record, ranking and next games." if coach else
-                     "I can tell you when the bus leaves, your hotel and room, dishes that fit your diet, "
-                     "and record your RSVP (\"I'm going\")."), None)
+CONTEXT_LIMIT = 120_000      # characters; Aivana accepts 200k per message, leave room for the question
 
-        if re.search(r"\b(record|rank|ranking|standing|standings|schedule|next game|games?)\b", t) and team.get("ncaa_seo"):
-            return self._ncaa_answer(team, t), None
 
-        if not trip:
-            return ("There are no trips yet." if not trips else
-                    "Which trip? Mention the opponent, e.g. \"bus time for Ohio State\"."), None
+def _fit(ctx):
+    """Keep the context under CONTEXT_LIMIT: trim past/cancelled and non-focus trips first."""
+    def size():
+        return len(json.dumps(ctx, default=str))
+    focus = ctx.get("focus_trip_id")
+    trips = ctx["trips"]
+    done = [t for t in trips if t.get("status") in ("CANCELLED", "COMPLETED")]
+    others = [t for t in trips if t.get("trip_id") != focus]
+    for group, key in ((done, "area"), (done, "priced_packages"), (others, "area"), (others, "priced_packages")):
+        if size() <= CONTEXT_LIMIT:
+            return
+        for t in group:
+            if t.pop(key, None) is not None:
+                t.setdefault("trimmed", []).append(key)
 
-        if coach:
-            m = re.search(r"\b(book|choose|pick|select|go with)\b.*?\bpackage\s*(\d+)", t) or re.search(r"\bpackage\s*(\d+)\b.*\b(book|choose|pick)", t)
-            if m:
-                no = int(next(g for g in m.groups() if g and g.isdigit()))
-                return "", {"type": "request_booking", "trip_id": trip["trip_id"], "package_no": no}
-            if re.search(r"\b(book|go with)\b.*\b(pick|recommend|aivana|best)\b", t) and trip.get("ai_pick"):
-                return "", {"type": "request_booking", "trip_id": trip["trip_id"], "package_no": trip["ai_pick"]["package_no"]}
-            if re.search(r"\b(why|recommend|best|pick|suggest)\b", t) and trip.get("ai_pick"):
-                return trip["ai_pick"].get("reason") or "Aivana picked the best-value package.", None
-            if re.search(r"\b(packages?|options?|cheapest|compare|hotels?)\b", t):
-                lines = [f"Package {p['package_no']}: ${p['total_cost']:,.2f} · {p['hotel'] or 'no hotel'}"
-                         f"{' (' + str(p['hotel_km']) + ' km)' if p['hotel_km'] is not None else ''} · {p['restaurant'] or 'no meal'}"
-                         f"{'' if p['within_budget'] else ' · over budget'}" for p in trip["packages"][:3]]
-                return (f"Top packages for {trip['opponent']}:\n" + "\n".join(lines)) if lines else "No packages yet.", None
-            if re.search(r"\b(status|approved|booked)\b", t):
-                return f"{trip['opponent']}: {trip['status'].replace('_', ' ').lower()}.", None
-            return (f"For {trip['opponent']} ({trip['status'].replace('_', ' ').lower()}): ask me to compare packages, "
-                    "explain the pick, or \"book package N\"."), None
 
-        # player
-        m = re.search(r"\b(not going|can't go|cannot go|i'm going|im going|i am going|count me in|maybe)\b", t)
-        if m:
-            word = m.group(1)
-            choice = "maybe" if word == "maybe" else ("not_going" if word in ("not going", "can't go", "cannot go") else "going")
-            return "", {"type": "rsvp", "trip_id": trip["trip_id"], "rsvp": choice}
-        if not trip.get("bus"):
-            return f"The {trip['opponent']} trip is still being planned. You'll see the details here once your coach publishes them.", None
-        if re.search(r"\b(bus|leave|leaves|depart|when)\b", t):
-            return f"The bus ({trip['bus']['company']}) leaves {trip['suggested_departure'].replace('T', ' at ')}.", None
-        if re.search(r"\b(hotel|room|stay|sleep)\b", t) and trip.get("hotel"):
-            room = (trip.get("my") or {}).get("room_no")
-            return (f"You're staying at {trip['hotel']['name']}, {trip['hotel']['km_to_venue']} km from the stadium"
-                    + (f", room {room}." if room else ". Rooms haven't been assigned yet.")), None
-        if re.search(r"\b(menu|eat|food|dinner|lunch|meal|dish)\b", t) and trip.get("restaurant"):
-            dishes = [m["name"] for m in trip.get("my_menu") or [] if m.get("course") == "main"][:5]
-            return (f"Team meal at {trip['restaurant']['name']}. "
-                    + (f"Mains that fit your diet: {', '.join(dishes)}." if dishes else "No main dish fits all your needs; tell your coach.")), None
-        return "Ask me when the bus leaves, where you're staying, or what you can eat.", None
+FIELD_NAMES = {"nights": "hotel nights", "meals": "team meals", "budget": "budget", "num_players": "players",
+               "num_coaches": "coaches", "num_staff": "staff", "depart_after": "earliest departure"}
+OPTION_NAMES = {"lowest_cost": "Lowest cost", "closest": "Closest", "best_value": "Best value"}
 
-    def _ncaa_answer(self, team, t):
-        sport, div, seo = team.get("sport"), team.get("division"), team.get("ncaa_seo")
-        try:
-            if re.search(r"\b(schedule|next game|games?)\b", t):
-                games = self.ncaa.team_games(sport, div, seo)
-                upcoming = [g for g in games if g["state"] in ("pre", "")][:3]
-                if not upcoming:
-                    return "No games found for the next two weeks."
-                return "Next games: " + "; ".join(
-                    f"{'at' if g['is_away'] else 'vs'} {g['opponent']['short']} {g['start_date']} {g['start_time']}" for g in upcoming)
-            s = self.ncaa.team_summary(sport, div, team.get("ncaa_name") or "")
-            bits = []
-            if s.get("record"):
-                bits.append(f"record {s['record']}" + (f" ({s['conference']})" if s.get("conference") else ""))
-            if s.get("rank"):
-                bits.append(f"ranked #{s['rank']} in {s.get('poll') or 'the poll'}")
-            return f"{team['ncaa_name']}: " + (", ".join(bits) if bits else "not listed in the current standings or rankings") + "."
-        except NCAAError as exc:
-            return f"I couldn't reach NCAA data right now ({exc})."
+
+def _describe_preview(trip, preview):
+    """The numbers in a what-if answer come from CostCalc, never from the model."""
+    def show(key, value):
+        if value is None:
+            return "none"
+        return f"${float(value):,.0f}" if key == "budget" else str(value).replace("T", " ")
+    changes = "; ".join(f"{FIELD_NAMES[k]} {show(k, preview['before'].get(k))} → {show(k, v)}"
+                        for k, v in preview["changes"].items())
+    lines = [f"Priced by the app for the {trip['opponent']} trip ({changes}):"]
+    for key, name in OPTION_NAMES.items():
+        old, new = preview["options_before"].get(key), preview["options_after"].get(key)
+        if new is not None:
+            lines.append(f"• {name}: " + (f"${old:,.2f} → ${new:,.2f}" if old is not None else f"${new:,.2f}"))
+    lines.append(f"{preview['within_budget_after']} of {preview['packages_after']} packages would be within budget. "
+                 "Nothing has changed yet: use Apply to update the trip and re-price.")
+    return "\n".join(lines)
 
 
 def _pkg_brief(p):
     d = p["detail"]
-    return {"package_no": p["package_no"], "total_cost": float(p["total_cost"]), "within_budget": d["within_budget"],
-            "hotel": (d.get("hotel") or {}).get("name"), "hotel_km": (d.get("hotel") or {}).get("km_to_venue"),
-            "restaurant": (d.get("restaurant") or {}).get("name"),
-            "missing_diets": (d.get("restaurant") or {}).get("missing_diets"), "departure": d.get("suggested_departure")}
-
-
-def _pick_trip(trips, text, focus_id):
-    for t in trips:
-        if t["opponent"].lower() in text:
-            return t
-    for t in trips:
-        if t["trip_id"] == focus_id:
-            return t
-    active = [t for t in trips if t.get("status") not in ("COMPLETED", "CANCELLED")]
-    return (active or trips or [None])[0]
+    h, r, b = d.get("hotel") or {}, d.get("restaurant") or {}, d.get("bus") or {}
+    return {"package_no": p["package_no"], "option": d.get("highlight"), "total_cost": float(p["total_cost"]), "within_budget": d["within_budget"],
+            "costs": d.get("costs"), "rooms": d.get("rooms"),
+            "hotel": h.get("name"), "hotel_km": h.get("km_to_venue"), "hotel_stars": h.get("stars"), "hotel_rating": h.get("rating"),
+            "hotel_price_is_estimate": bool(h.get("price_estimated")),
+            "restaurant": r.get("name"), "cuisine": r.get("cuisine"), "missing_diets": r.get("missing_diets"),
+            "bus": f"{b.get('count')} x {b.get('company')} {b.get('vehicle')}", "departure": d.get("suggested_departure"),
+            "arrive_by": d.get("arrive_by"), "late_arrival": d.get("late_arrival")}
 
 
 def _strip_fences(raw):

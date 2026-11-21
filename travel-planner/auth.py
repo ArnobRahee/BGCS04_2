@@ -28,7 +28,7 @@ def login_required(db_getter, need_profile=True, role=None):
             if need_profile and not g.profile:
                 return jsonify({"error": "Finish setting up your account first.", "needs_onboarding": True}), 403
             if role and (not g.profile or g.profile["role"] != role):
-                return jsonify({"error": f"Only a {role} can do that."}), 403
+                return jsonify({"error": "Only a team planner can do that." if role == "coach" else f"Only a {role} can do that."}), 403
             if need_profile and not g.profile.get("team_id"):
                 return jsonify({"error": "Join or create a team first.", "needs_onboarding": True}), 403
             return fn(*args, **kwargs)

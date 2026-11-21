@@ -8,6 +8,9 @@ Rules (change them here, in one place):
 - Meals: travelers x restaurant price_per_person x team meals.
 - Timing: overnight trips arrive by 6 PM the day before the match; day trips arrive 3 hours
   before kickoff. The bus never leaves before the trip's depart_after time.
+- Three highlighted options, always different packages (and different hotels when possible):
+  lowest_cost (smallest total), closest (hotel nearest the venue; the team-meal restaurant on
+  day trips) and best_value (lowest value_score, see value_scores()).
 """
 import math
 from datetime import datetime, timedelta
@@ -22,6 +25,11 @@ RESTAURANT_RADIUS_KM = 15
 MAX_HOTELS = 6
 MAX_RESTAURANTS = 4
 MAX_PACKAGES = 12
+
+# Best-value weights (lower score is better). Each part is scaled 0..1 across the packages.
+VALUE_WEIGHTS = {"cost": 0.45, "distance": 0.25, "diet": 0.15, "quality": 0.10, "late": 0.05}
+OVER_BUDGET_PENALTY = 0.5
+HIGHLIGHTS = ("lowest_cost", "closest", "best_value")
 
 
 class CostCalc:
@@ -72,7 +80,8 @@ class CostCalc:
         if request.nights == 0:
             return [None]
         hotels = [h for h in self.data.hotels_near(request.venue_lat, request.venue_lng, HOTEL_RADIUS_KM)
-                  if int(h["rooms_available"]) >= self.calc_rooms(request, int(h["room_capacity"]))]
+                  if h.get("rooms_available") is None            # Google hotels: availability unknown
+                  or int(h["rooms_available"]) >= self.calc_rooms(request, int(h["room_capacity"]))]
         # best value first: cheap, close, decent stars
         hotels.sort(key=lambda h: float(h["price_per_night"]) + 8 * h["km_to_venue"] - 10 * int(h.get("stars") or 0))
         return hotels[:MAX_HOTELS]
@@ -81,10 +90,13 @@ class CostCalc:
         if request.meals == 0:
             return [None]
         near = self.data.restaurants_near(request.venue_lat, request.venue_lng, RESTAURANT_RADIUS_KM)
-        fits = [r for r in near if r.get("takes_group_reservations", True)
-                and int(r["group_capacity"]) >= request.total_travelers()] or near
+        def seats_group(r):
+            return r.get("takes_group_reservations", True) and int(r.get("group_capacity") or 0) >= request.total_travelers()
+        # If nothing nearby seats the whole group, still show the options but flag them.
+        fits = [r for r in near if seats_group(r)] or near
         for r in fits:
             r["missing_diets"] = self.data.missing_diets(r["id"], request.diet_tags)
+            r["fits_group"] = bool(seats_group(r))
         fits.sort(key=lambda r: (len(r["missing_diets"]), float(r["price_per_person"]), r["km_to_venue"]))
         return fits[:MAX_RESTAURANTS]
 
@@ -124,16 +136,98 @@ class CostCalc:
                     "route_km": route, "drive_min": drive, **timing,
                 },
             })
-        packages.sort(key=lambda p: p["total"])
+        if not packages:
+            return []
+        scores = self.value_scores(packages, request)
+        for p, score in zip(packages, scores):
+            p["detail"]["value_score"] = score
+            p["detail"]["highlight"] = None
+        picks = self.highlights(packages)
+        for key, p in picks.items():
+            p["detail"]["highlight"] = key
+        if picks.get("closest") is not None and picks.get("lowest_cost") is not None:
+            closest_km = min(_distance(p) for p in packages)
+            # Honest labels: if the cheapest package is also the nearest, say so, and call
+            # the second option "next closest".
+            picks["lowest_cost"]["detail"]["also_closest"] = _distance(picks["lowest_cost"]) == closest_km
+            picks["closest"]["detail"]["next_closest"] = _distance(picks["closest"]) > closest_km
+        # Keep the three highlights, then fill up with the cheapest of the rest.
+        chosen = list(picks.values())
+        rest = sorted((p for p in packages if p not in chosen), key=lambda p: p["total"])
+        kept = sorted(chosen + rest[:max(0, MAX_PACKAGES - len(chosen))], key=lambda p: p["total"])
         return [TravelPackage(package_no=i, total_cost=p["total"], route_km=route, detail=p["detail"])
-                for i, p in enumerate(packages[:MAX_PACKAGES], start=1)]
+                for i, p in enumerate(kept, start=1)]
+
+    # -- comparing packages ------------------------------------------------
+    @staticmethod
+    def value_scores(packages: list[dict], request: TravelRequest) -> list[float]:
+        """Best-value score per package (lower is better): cost, distance, diet coverage,
+        hotel quality and on-time arrival, each scaled 0..1, plus a penalty when over budget."""
+        def scaled(values):
+            lo, hi = min(values), max(values)
+            return [0.0 if hi == lo else (v - lo) / (hi - lo) for v in values]
+
+        cost = scaled([p["total"] for p in packages])
+        dist = scaled([_distance(p) for p in packages])
+        n_diets = max(1, len(request.diet_tags))
+        out = []
+        for p, c, km in zip(packages, cost, dist):
+            d = p["detail"]
+            diet = len((d.get("restaurant") or {}).get("missing_diets") or []) / n_diets
+            if d.get("restaurant") and d["restaurant"].get("fits_group") is False:
+                diet = 1.0                                # can't seat everyone: as bad as missing every diet
+            hotel = d.get("hotel") or {}
+            if hotel.get("rating"):
+                quality = 1 - float(hotel["rating"]) / 5
+            elif hotel.get("stars"):
+                quality = 1 - int(hotel["stars"]) / 5
+            else:
+                quality = 0.5 if hotel else 0.0
+            w = VALUE_WEIGHTS
+            score = (w["cost"] * c + w["distance"] * km + w["diet"] * min(1.0, diet)
+                     + w["quality"] * quality + w["late"] * (1 if d.get("late_arrival") else 0))
+            if not d.get("within_budget", True):
+                score += OVER_BUDGET_PENALTY
+            out.append(round(score, 4))
+        return out
+
+    @staticmethod
+    def highlights(packages: list[dict]) -> dict:
+        """Pick three different packages: lowest cost, closest, best value.
+        Prefers a different hotel for each so the coach sees real alternatives."""
+        hotel_of = lambda p: (p["detail"].get("hotel") or {}).get("id")
+        picks, used, used_hotels = {}, [], set()
+
+        def take(key, candidates, order):
+            fresh = [p for p in candidates if p not in used]
+            if not fresh:
+                return
+            other_hotel = [p for p in fresh if hotel_of(p) is None or hotel_of(p) not in used_hotels]
+            best = min(other_hotel or fresh, key=order)
+            picks[key] = best
+            used.append(best)
+            if hotel_of(best):
+                used_hotels.add(hotel_of(best))
+
+        take("lowest_cost", packages, lambda p: (p["total"], p["detail"]["value_score"]))
+        take("closest", packages, lambda p: (_distance(p), p["total"]))
+        take("best_value", packages, lambda p: (p["detail"]["value_score"], p["total"]))
+        return picks
+
+
+def _distance(p: dict) -> float:
+    """Hotel-to-venue km; for day trips, the team-meal restaurant's km to the venue."""
+    d = p["detail"]
+    place = d.get("hotel") or d.get("restaurant") or {}
+    return float(place.get("km_to_venue") or 0)
 
 
 def _hotel_view(h):
     if not h:
         return None
     keep = ("id", "name", "address", "lat", "lng", "stars", "price_per_night", "amenities",
-            "cancellation_policy", "km_to_venue", "drive_min_to_venue", "source")
+            "cancellation_policy", "km_to_venue", "drive_min_to_venue", "source",
+            "place_id", "rating", "user_rating_count", "price_level", "price_estimated", "google_maps_uri", "photo")
     return {k: h.get(k) for k in keep}
 
 
@@ -141,5 +235,5 @@ def _restaurant_view(r):
     if not r:
         return None
     keep = ("id", "name", "address", "lat", "lng", "cuisine", "price_per_person", "halal_certified",
-            "km_to_venue", "missing_diets", "source")
+            "km_to_venue", "missing_diets", "source", "group_capacity", "fits_group")
     return {k: r.get(k) for k in keep}

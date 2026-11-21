@@ -1,13 +1,18 @@
 """End-to-end API flow on the in-memory database, plus a schema check against Supabase."""
+from datetime import datetime, timedelta
+
 import pytest
 
 import app as appmod
+
+SOON = (datetime.now() + timedelta(days=14)).replace(hour=12, minute=0, second=0, microsecond=0).isoformat(timespec="minutes")
 
 # Columns that exist in Supabase (from the migrations). If code writes anything else, Supabase rejects it.
 SCHEMA = {
     "teams": {"id", "name", "join_code", "home_name", "home_lat", "home_lng", "owner_id", "created_at",
               "ncaa_seo", "ncaa_name", "sport", "division"},
     "profiles": {"id", "full_name", "role", "team_id", "diet_tags", "created_at"},
+    "team_members": {"id", "team_id", "profile_id", "role", "created_at"},
     "trips": {"id", "team_id", "created_by", "opponent", "venue_name", "venue_address", "venue_lat", "venue_lng",
               "match_at", "depart_after", "nights", "budget", "num_players", "num_coaches", "num_staff", "diet_tags",
               "meals", "status", "selected_package_no", "published", "ai_recommendation", "created_at", "ncaa_game_id"},
@@ -33,7 +38,7 @@ C, P = {"Authorization": "Bearer demo-coach"}, {"Authorization": "Bearer demo-pl
 def client(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db)
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     monkeypatch.setattr(appmod, "DB", db)
     monkeypatch.setattr(appmod, "planner", planner)
     return appmod.app.test_client(), db
@@ -124,10 +129,10 @@ def test_onboarding_coach_then_player_with_join_code(client):
 
 def test_trip_validation(client):
     c, _ = client
-    bad = c.post("/api/trips", headers=C, json={"opponent": "", "venue_id": "V002", "match_at": "2026-12-05T12:00"})
+    bad = c.post("/api/trips", headers=C, json={"opponent": "", "venue_id": "V002", "match_at": SOON})
     assert bad.status_code == 400
-    bad = c.post("/api/trips", headers=C, json={"opponent": "X", "venue_id": "NOPE", "match_at": "2026-12-05T12:00"})
+    bad = c.post("/api/trips", headers=C, json={"opponent": "X", "venue_id": "NOPE", "match_at": SOON})
     assert bad.status_code == 400
-    ok = c.post("/api/trips", headers=C, json={"opponent": "Toledo", "venue_id": "V002", "match_at": "2026-12-05T12:00",
+    ok = c.post("/api/trips", headers=C, json={"opponent": "Toledo", "venue_id": "V002", "match_at": SOON,
                                                "nights": 0, "meals": 1})
     assert ok.status_code == 201 and ok.json["packages"][0]["detail"]["hotel"] is None

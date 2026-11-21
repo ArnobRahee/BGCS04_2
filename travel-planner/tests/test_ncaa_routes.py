@@ -1,6 +1,7 @@
 import pytest
 
 import app as appmod
+from geocode import Geocoder
 from ncaa_client import NCAAClient
 from tests.ncaa_fixtures import FakeNCAA
 
@@ -11,10 +12,11 @@ C, P = {"Authorization": "Bearer demo-coach"}, {"Authorization": "Bearer demo-pl
 def client(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db)
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     monkeypatch.setattr(appmod, "DB", db)
     monkeypatch.setattr(appmod, "planner", planner)
     monkeypatch.setattr(appmod, "ncaa", NCAAClient(db=db, fetch=FakeNCAA()))
+    monkeypatch.setattr(appmod, "geocoder", Geocoder(fetch=lambda q: [{"name": q, "display_name": q, "lat": "41.65", "lon": "-83.61"}]))
     return appmod.app.test_client(), db
 
 
@@ -40,7 +42,7 @@ def test_link_team_validates_sport_division_and_school(client):
     assert c.patch("/api/team", headers=C, json={"sport": "football", "division": "d1", "ncaa_seo": "toledo"}).status_code == 400
     assert c.patch("/api/team", headers=C, json={"sport": "football", "division": "fbs", "ncaa_seo": "hogwarts"}).status_code == 400
     r = c.patch("/api/team", headers=C, json={"sport": "basketball-men", "division": "d1", "ncaa_seo": "toledo"})
-    assert r.status_code == 200 and r.json["ncaa_name"] == "Toledo"
+    assert r.status_code == 200 and r.json["team"]["ncaa_name"] == "Toledo" and r.json["action"] == "created"
     assert c.patch("/api/team", headers=P, json={"sport": "football", "division": "fbs", "ncaa_seo": "toledo"}).status_code == 403
 
 

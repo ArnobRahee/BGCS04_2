@@ -66,6 +66,14 @@ class NCAAError(RuntimeError):
     pass
 
 
+class NCAANoData(NCAAError):
+    """404: the API has nothing for that path (e.g. a day without games). Cached like a result."""
+
+
+_NO_DATA = object()
+NO_DATA_TTL = HOUR            # how long to remember "nothing there" (a day's schedule can still be posted)
+
+
 class NCAAClient:
     def __init__(self, db=None, fetch=None, base_url=BASE_URL):
         self.db = db                              # SupabaseDB/MemoryDB for the persistent cache (optional)
@@ -88,7 +96,7 @@ class NCAAClient:
         except requests.RequestException as exc:
             raise NCAAError(f"NCAA data service unreachable: {exc}") from exc
         if resp.status_code == 404:
-            raise NCAAError("NCAA has no data for that request.")
+            raise NCAANoData("NCAA has no data for that request.")
         if resp.status_code == 429:
             raise NCAAError("NCAA data service is busy; try again in a few seconds.")
         if resp.status_code >= 400:
@@ -102,6 +110,8 @@ class NCAAClient:
         now = time.time()
         hit = self._mem.get(path)
         if hit and hit[0] > now:
+            if hit[1] is _NO_DATA:
+                raise NCAANoData("NCAA has no data for that request.")
             return hit[1]
         row = self._db_get(path)
         cached = _unwrap(row["payload"]) if row is not None else None
@@ -112,6 +122,11 @@ class NCAAClient:
                 return cached
         try:
             payload = self._fetch(path)
+        except NCAANoData:
+            # Remember "nothing there" too: without this, every page load re-asked the API about
+            # each of the next 14 days (0.4 s apiece because of the rate limit), which stalled pages.
+            self._mem[path] = (now + min(ttl, NO_DATA_TTL), _NO_DATA)
+            raise
         except NCAAError:
             if row is not None:                   # serve stale data rather than nothing
                 return cached

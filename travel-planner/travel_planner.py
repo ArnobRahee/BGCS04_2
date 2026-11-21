@@ -6,17 +6,82 @@ Trip lifecycle (trips.status):
       +------------------------------+
   Players see hotel, restaurant and times only once the coach publishes a BOOKED trip.
 """
+import copy
 import math
+from datetime import datetime, timedelta
 
 from aivana_client import AivanaClient
 from booking_service import BookingService, MockBookingProvider
 from cost_calc import CostCalc
 from models import TravelRequest, parse_dt
+from google_places import maps_link
 from travel_data import TravelData
 
 
 class PlanError(ValueError):
     pass
+
+
+class NotFound(PlanError):
+    """A trip that doesn't exist or belongs to another team (both look the same: 404)."""
+
+
+# Sensible limits for one away trip. They stop typos (100000 players, 365 nights)
+# from producing absurd packages; the form shows the same limits.
+LIMITS = {
+    "num_players": (0, 150, "players"),
+    "num_coaches": (0, 30, "coaches"),
+    "num_staff": (0, 50, "staff"),
+    "nights": (0, 14, "hotel nights"),
+    "meals": (0, 30, "team meals"),
+}
+MAX_BUDGET = 1_000_000
+# Match times are local wall-clock times; the server may run in UTC, so allow
+# half a day of slack before calling a date "in the past".
+PAST_GRACE = timedelta(hours=12)
+
+
+def _count(form, key, default):
+    value = form.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    if isinstance(value, bool):
+        raise ValueError(key)
+    number = float(value)
+    if not number.is_integer():
+        raise PlanError(f"Use a whole number for {LIMITS[key][2]}.")
+    return int(number)
+
+
+def validate_trip(row: dict, now: datetime | None = None, check_past: bool = True) -> None:
+    """Raise PlanError with a plain message when a trip's details don't make sense."""
+    now = now or datetime.now()
+    if not row["opponent"]:
+        raise PlanError("Enter the opponent.")
+    if not row.get("venue_name"):
+        raise PlanError("Enter the venue name.")
+    if not (-90 <= row["venue_lat"] <= 90) or not (-180 <= row["venue_lng"] <= 180):
+        raise PlanError("The venue location is invalid (latitude -90 to 90, longitude -180 to 180).")
+    for key, (low, high, name) in LIMITS.items():
+        if row[key] < 0:
+            raise PlanError("Numbers can't be negative.")
+        if not low <= row[key] <= high:
+            raise PlanError(f"Enter between {low} and {high} {name}.")
+    if row["num_players"] + row["num_coaches"] + row["num_staff"] == 0:
+        raise PlanError("Add at least one traveler.")
+    if not math.isfinite(row["budget"]) or row["budget"] < 0:
+        raise PlanError("The budget can't be negative.")
+    if row["budget"] > MAX_BUDGET:
+        raise PlanError(f"Enter a budget up to ${MAX_BUDGET:,}.")
+    match_at = datetime.fromisoformat(row["match_at"])
+    if check_past and match_at < now - PAST_GRACE:
+        raise PlanError("The match date is in the past. Pick an upcoming game.")
+    if row.get("depart_after"):
+        depart = datetime.fromisoformat(row["depart_after"])
+        if depart >= match_at:
+            raise PlanError("The bus must be able to leave before the match starts.")
+        if check_past and depart < now - PAST_GRACE:
+            raise PlanError("The earliest departure time is in the past.")
 
 
 class TravelPlanner:
@@ -37,7 +102,7 @@ class TravelPlanner:
     def trip(self, trip_id, team_id):
         rows = self.db.select("trips", {"id": trip_id, "team_id": team_id})
         if not rows:
-            raise PlanError("Trip not found.")
+            raise NotFound("Trip not found.")
         return rows[0]
 
     def packages(self, trip_id):
@@ -50,8 +115,17 @@ class TravelPlanner:
             raise PlanError("Package not found. Re-plan the trip and pick again.")
         return rows[0]
 
+    def team_members(self, team_id, role):
+        """Profiles that belong to this team (team_members), plus older rows linked only by profiles.team_id."""
+        rows = {p["id"]: p for p in self.db.select("profiles", {"team_id": team_id, "role": role})}
+        ids = [m["profile_id"] for m in self.db.select("team_members", {"team_id": team_id, "role": role})
+               if m["profile_id"] not in rows]
+        if ids:
+            rows.update({p["id"]: p for p in self.db.select("profiles", {"id": ids})})
+        return sorted(rows.values(), key=lambda p: (p.get("full_name") or "").lower())
+
     def team_players(self, team_id):
-        return self.db.select("profiles", {"team_id": team_id, "role": "player"}, order="full_name.asc")
+        return self.team_members(team_id, "player")
 
     # -- planning ----------------------------------------------------------
     def create_trip(self, team: dict, coach: dict, form: dict) -> dict:
@@ -66,26 +140,34 @@ class TravelPlanner:
                 "match_at": parse_dt(form["match_at"]).isoformat(timespec="minutes"),
                 "depart_after": (parse_dt(form.get("depart_after")).isoformat(timespec="minutes")
                                  if form.get("depart_after") else None),
-                "nights": int(form.get("nights", 1)),
+                "nights": _count(form, "nights", 1),
                 "budget": float(form.get("budget") or 0),
-                "num_players": int(form.get("num_players") if form.get("num_players") not in (None, "") else len(players)),
-                "num_coaches": int(form.get("num_coaches") or 1),
-                "num_staff": int(form.get("num_staff") or 0),
-                "meals": int(form.get("meals", 1)),
+                "num_players": _count(form, "num_players", len(players)),
+                "num_coaches": _count(form, "num_coaches", 1),
+                "num_staff": _count(form, "num_staff", 0),
+                "meals": _count(form, "meals", 1),
                 "diet_tags": diet,
                 "status": "PLANNING", "published": False, "selected_package_no": None,
                 "ncaa_game_id": str(form["ncaa_game_id"]) if form.get("ncaa_game_id") else None,
             }
         except KeyError as exc:
             raise PlanError(f"Missing trip detail: {exc.args[0]}.") from exc
-        except (ValueError, TypeError, AttributeError) as exc:
+        except PlanError:
+            raise
+        except (ValueError, TypeError, AttributeError, OverflowError) as exc:
             raise PlanError("Check the match date/time and the numbers in the form.") from exc
-        if not row["opponent"]:
-            raise PlanError("Enter the opponent.")
-        if min(row["nights"], row["meals"], row["num_players"], row["num_coaches"], row["num_staff"]) < 0:
-            raise PlanError("Numbers can't be negative.")
-        if row["num_players"] + row["num_coaches"] + row["num_staff"] == 0:
-            raise PlanError("Add at least one traveler.")
+        validate_trip(row)
+        if form.get("team_id") and str(form["team_id"]) != str(team["id"]):
+            raise PlanError("You switched teams while planning. Open Plan a Trip again for the team you're on now.")
+        for other in self.db.select("trips", {"team_id": team["id"]}):
+            if other.get("status") == "CANCELLED":
+                continue
+            if row["ncaa_game_id"] and other.get("ncaa_game_id") == row["ncaa_game_id"]:
+                raise PlanError(f"This game already has a trip ({other['opponent']}). Open it from My Trips.")
+            if (other["opponent"].strip().lower() == row["opponent"].lower()
+                    and str(other["match_at"])[:16].replace(" ", "T") == row["match_at"][:16]):
+                raise PlanError(f"You already have a trip for {other['opponent']} at that date and time. "
+                                "Open it from My Trips instead of creating a copy.")
         trip = self.db.insert("trips", row)[0]
         if players:
             self.db.insert("trip_participants", [{"trip_id": trip["id"], "player_id": p["id"], "rsvp": "maybe",
@@ -117,8 +199,84 @@ class TravelPlanner:
         brief = {"opponent": request.opponent, "venue": request.venue_name, "travelers": request.total_travelers(),
                  "nights": request.nights, "budget": request.budget, "diet_tags": request.diet_tags}
         rec = self.aivana.recommend(brief, pkg_dicts) if packages else None
+        hotel_source = "google" if any((p.detail.get("hotel") or {}).get("source") == "google" for p in packages) else "catalog"
+        if rec is not None:
+            rec = {**rec, "hotel_source": hotel_source, "hotel_note": self.data.hotel_warning}
         return self.db.update("trips", {"ai_recommendation": rec, "status": "PLANNING", "selected_package_no": None},
                               {"id": trip["id"]})[0]
+
+    # -- deleting ----------------------------------------------------------
+    def delete_trip(self, trip: dict) -> dict:
+        """Remove a trip and everything that hangs off it, children first so nothing is left pointing
+        at it (Supabase would cascade too; doing it here keeps the in-memory demo identical).
+        Bookings are mock records: nothing external is cancelled."""
+        tid = trip["id"]
+        anns = [a["id"] for a in self.db.select("announcements", {"trip_id": tid})]
+        removed = {"packages": len(self.packages(tid)), "bookings": len(self.db.select("bookings", {"trip_id": tid})),
+                   "announcements": len(anns), "rsvps": len(self.db.select("trip_participants", {"trip_id": tid}))}
+        if anns:
+            self.db.delete("announcement_reads", {"announcement_id": anns})
+            self.db.delete("saved_items", {"announcement_id": anns})
+            self.db.delete("announcements", {"trip_id": tid})
+        self.db.delete("saved_items", {"trip_id": tid})
+        for table in ("bookings", "trip_participants", "trip_packages"):
+            self.db.delete(table, {"trip_id": tid})
+        self.db.delete("trips", {"id": tid, "team_id": trip["team_id"]})
+        return removed
+
+    # -- what-if changes (proposed by Aivana in chat, applied only when the coach confirms) ----
+    EDITABLE = ("nights", "meals", "budget", "num_players", "num_coaches", "num_staff", "depart_after")
+
+    def clean_changes(self, trip: dict, changes) -> dict:
+        """Keep only editable trip fields, convert them, and drop ones that don't change anything."""
+        if not isinstance(changes, dict) or not changes:
+            raise PlanError("No changes to apply.")
+        unknown = set(changes) - set(self.EDITABLE)
+        if unknown:
+            raise PlanError(f"These details can't be changed here: {', '.join(sorted(unknown))}.")
+        out = {}
+        try:
+            for key, value in changes.items():
+                if key == "budget":
+                    out[key] = float(value if value not in (None, "") else 0)
+                elif key == "depart_after":
+                    out[key] = parse_dt(value).isoformat(timespec="minutes") if value not in (None, "") else None
+                else:
+                    out[key] = _count(changes, key, trip[key])
+        except PlanError:
+            raise
+        except (ValueError, TypeError, AttributeError, OverflowError) as exc:
+            raise PlanError("Check the numbers in the change.") from exc
+        out = {k: v for k, v in out.items() if v != trip.get(k) and not (k == "budget" and float(trip.get(k) or 0) == v)}
+        if not out:
+            raise PlanError("That's already how the trip is set up.")
+        merged = {**trip, **out, "match_at": parse_dt(trip["match_at"]).isoformat(timespec="minutes"),
+                  "budget": float(out.get("budget", trip.get("budget") or 0)),
+                  "venue_lat": float(trip["venue_lat"]), "venue_lng": float(trip["venue_lng"])}
+        validate_trip(merged, check_past="depart_after" in out)
+        return out
+
+    def preview_changes(self, trip: dict, team: dict, changes) -> dict:
+        """Price the trip with the changes applied, without saving anything."""
+        if trip["status"] != "PLANNING":
+            raise PlanError("Cancel the current bookings before changing the trip.")
+        clean = self.clean_changes(trip, changes)
+        after = self.calc.generate_packages(TravelRequest.from_trip({**trip, **clean}, team))
+        before = self.packages(trip["id"])
+        summary = lambda pkgs: {(p["detail"] if isinstance(p, dict) else p.detail).get("highlight"):
+                                round(float(p["total_cost"] if isinstance(p, dict) else p.total_cost), 2)
+                                for p in pkgs if (p["detail"] if isinstance(p, dict) else p.detail).get("highlight")}
+        return {"changes": clean, "before": {k: trip.get(k) for k in clean},
+                "options_before": summary(before), "options_after": summary(after), "packages_after": len(after),
+                "within_budget_after": sum(1 for p in after if p.detail["within_budget"])}
+
+    def apply_changes(self, trip: dict, team: dict, changes) -> dict:
+        """Save the confirmed changes and re-price every package (clears any earlier pick)."""
+        if trip["status"] != "PLANNING":
+            raise PlanError("Cancel the current bookings before changing the trip.")
+        clean = self.clean_changes(trip, changes)
+        trip = self.db.update("trips", clean, {"id": trip["id"]})[0]
+        return self.plan(trip, team)
 
     def replan_with_rsvps(self, trip: dict, team: dict) -> dict:
         going = self.db.select("trip_participants", {"trip_id": trip["id"], "rsvp": "going"})
@@ -131,7 +289,8 @@ class TravelPlanner:
         if trip["status"] == "BOOKED":
             raise PlanError("This trip is already booked. Cancel the bookings first.")
         pkg = self.package(trip, package_no)
-        ai = (trip.get("ai_recommendation") or {}).get("package_no") == package_no
+        rec = trip.get("ai_recommendation") or {}
+        ai = rec.get("source") == "aivana" and rec.get("package_no") == package_no
         self.bookings.request(trip, pkg, coach_id, ai_pick=ai)
         return self.db.update("trips", {"selected_package_no": package_no, "status": "AWAITING_APPROVAL"},
                               {"id": trip["id"]})[0]
@@ -192,18 +351,39 @@ class TravelPlanner:
         view.update({"suggested_departure": d["suggested_departure"], "drive_min": d["drive_min"],
                      "bus": {k: d["bus"].get(k) for k in ("company", "vehicle", "wifi")}})
         if d.get("hotel"):
-            view["hotel"] = {k: d["hotel"].get(k) for k in ("name", "address", "lat", "lng", "stars", "amenities", "km_to_venue")}
+            view["hotel"] = self._hotel_public(d["hotel"])
         if d.get("restaurant"):
             r = d["restaurant"]
             view["restaurant"] = {k: r.get(k) for k in ("id", "name", "address", "lat", "lng", "cuisine", "km_to_venue")}
+            view["restaurant"]["maps_url"] = maps_link(r)
             view["my_menu"] = self.data.menu(r["id"], player.get("diet_tags") or [])
         return view
+
+    def _hotel_public(self, h):
+        out = {k: h.get(k) for k in ("name", "address", "lat", "lng", "stars", "amenities", "km_to_venue",
+                                     "rating", "user_rating_count", "source")}
+        out["photo_url"] = self.data.places.photo_url(h.get("photo"))
+        out["photo_author"] = (h.get("photo") or {}).get("author")
+        out["photo_author_uri"] = (h.get("photo") or {}).get("author_uri")
+        out["maps_url"] = maps_link(h)
+        return out
+
+    def _with_links(self, pkg):
+        pkg = copy.deepcopy(pkg)
+        h = (pkg.get("detail") or {}).get("hotel")
+        if h:
+            h["photo_url"] = self.data.places.photo_url(h.get("photo"))
+            h["maps_url"] = maps_link(h)
+        r = (pkg.get("detail") or {}).get("restaurant")
+        if r:
+            r["maps_url"] = maps_link(r)
+        return pkg
 
     def coach_view(self, trip: dict) -> dict:
         parts = self.db.select("trip_participants", {"trip_id": trip["id"]})
         names = {p["id"]: p["full_name"] for p in self.team_players(trip["team_id"])}
         return {**trip,
-                "packages": self.packages(trip["id"]),
+                "packages": [self._with_links(p) for p in self.packages(trip["id"])],
                 "bookings": self.db.select("bookings", {"trip_id": trip["id"]}, order="created_at.asc"),
                 "participants": [{**p, "full_name": names.get(p["player_id"], "?")} for p in parts],
                 "rsvp_counts": {s: sum(p["rsvp"] == s for p in parts) for s in ("going", "maybe", "not_going")},
