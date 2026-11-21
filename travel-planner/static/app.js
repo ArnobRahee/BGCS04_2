@@ -175,63 +175,98 @@ function confirmModal(title, text, okLabel, danger = false) {
 }
 
 /* ================= sign in ================= */
+/* The Rally landing screen. "Sign in as ..." opens a sign-in pop-up. While Supabase isn't configured
+   (demo deployments) the pop-up is a preview: its form explains that sign-in isn't switched on, and
+   its "Demo mode" button opens the demo for that role. With Supabase configured it signs in for real. */
+const ROLE_INFO = {
+  planner: { name: "Team Planner", tag: "Build the trip. Bring the team.", icon: "i-clipboard", demo: "demo-coach" },
+  player: { name: "Player", tag: "Know the plan. Focus on your game.", icon: "i-shirt", demo: "demo-player" },
+};
+const roleName = (r) => (r === "coach" ? "Team Planner" : "Player");
+const svgIcon = (id, cls = "ic") => {
+  const ns = "http://www.w3.org/2000/svg";
+  const s = document.createElementNS(ns, "svg"); s.setAttribute("class", cls); s.setAttribute("aria-hidden", "true");
+  const u = document.createElementNS(ns, "use"); u.setAttribute("href", "#" + id); s.append(u);
+  return s;
+};
+
 function setupAuth() {
-  if (CFG.demo) {
-    $("#demo-box").hidden = false;
-    $("#auth-title").textContent = "Pick a demo account";
-    $$("[data-demo]").forEach((b) => b.addEventListener("click", () => useDemo(b.dataset.demo)));
-    return;
-  }
-  $("#real-auth").hidden = false;
-  if (!sb) { flash("Couldn't load the sign-in library. Check your internet connection and reload.", "error"); return; }
-  $("#google-btn").addEventListener("click", async () => {
-    const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin + window.location.pathname } });
-    if (error) flash(error.message, "error");
-  });
-  const form = $("#auth-form");
-  let mode = "signin";
-  $$(".auth-tabs button").forEach((tab) => tab.addEventListener("click", () => {
-    mode = tab.dataset.mode;
-    $$(".auth-tabs button").forEach((t) => t.setAttribute("aria-selected", t === tab));
-    $("#auth-submit").textContent = mode === "signin" ? "Sign in" : "Create account";
-    $("#auth-title").textContent = mode === "signin" ? "Welcome back" : "Create your account";
-  }));
+  $$("[data-signin]").forEach((b) => b.addEventListener("click", () => openSignIn(b.dataset.signin, "signin")));
+  $$("[data-create]").forEach((b) => b.addEventListener("click", () => openSignIn(b.dataset.create, "create")));
+  $$("[data-demo]").forEach((b) => b.addEventListener("click", () => useDemo(b.dataset.demo)));
+  $("#demo-strip").hidden = !CFG.demo;
+}
+
+function openSignIn(roleKey, mode = "signin") {
+  const role = ROLE_INFO[roleKey] || ROLE_INFO.planner;
+  const live = !CFG.demo && !!sb;                    // real Supabase sign-in available?
   const redirectTo = window.location.origin + window.location.pathname;
-  let pendingEmail = "";
-  const showInbox = (email) => {
-    pendingEmail = email;
-    $("#inbox-email").textContent = email;
-    $("#real-auth").hidden = true;
-    $("#check-inbox").hidden = false;
-    $("#auth-title").textContent = "Confirm your email";
-  };
-  $("#inbox-back").addEventListener("click", () => {
-    $("#check-inbox").hidden = true;
-    $("#real-auth").hidden = false;
-    $("#auth-title").textContent = "Welcome back";
-  });
-  $("#inbox-resend").addEventListener("click", (e) => busy(e.currentTarget, async () => {
-    const { error } = await sb.auth.resend({ type: "signup", email: pendingEmail, options: { emailRedirectTo: redirectTo } });
-    if (error) throw error;
-    flash("Sent. Check your inbox.", "ok");
-  }));
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const { email, password } = Object.fromEntries(new FormData(form));
-    busy($("#auth-submit"), async () => {
-      if (mode === "signup") {
-        const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } });
-        if (error) throw error;
-        if (!data.session) return showInbox(email);        // "Confirm email" is on in Supabase
-      } else {
-        const { error } = await sb.auth.signInWithPassword({ email, password });
-        if (error && /not confirmed/i.test(error.message)) return showInbox(email);
-        if (error) throw error;
-      }
-      flash("");
-      boot();
+  const body = el("div", { class: "rl-signin" });
+  let m;
+  const note = el("p", { class: "rl-note", role: "status", hidden: true });
+  const say = (text, kind = "info") => { note.textContent = text; note.className = "rl-note " + kind; note.hidden = !text; };
+  const notYet = () => say("Sign-in isn't switched on for this demo yet. Use Demo mode below to look around.", "info");
+
+  const demoBtn = CFG.demo ? el("button", { type: "button", class: "rl-demo-btn", onclick: () => { m.close(); useDemo(role.demo); } },
+    svgIcon("i-play"), `Demo mode · ${role.name}`) : null;
+
+  function draw() {
+    const creating = mode === "create";
+    const name = el("input", { name: "full_name", autocomplete: "name", placeholder: "Your name", required: true });
+    const email = el("input", { name: "email", type: "email", autocomplete: "email", placeholder: "name@school.edu", required: true });
+    const pass = el("input", { name: "password", type: "password", minlength: 6, required: true, placeholder: creating ? "6+ characters" : "Your password",
+      autocomplete: creating ? "new-password" : "current-password" });
+    const submit = el("button", { type: "submit", class: "rl-primary" }, creating ? "Create account" : "Sign in");
+    const form = el("form", { class: "rl-form", novalidate: !live },
+      creating ? el("label", {}, "Full name", name) : null,
+      el("label", {}, "School email", email),
+      el("label", {}, el("span", { class: "rl-label-row" }, "Password",
+        creating ? null : el("button", { type: "button", class: "rl-link small", onclick: () => (live ? say("Password reset isn't set up yet. Ask your team planner.") : notYet()) }, "Forgot password?")), pass),
+      submit);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (!live) return notYet();
+      busy(submit, async () => {
+        try { sessionStorage.setItem("wantedRole", roleKey); } catch (_) {}
+        if (creating) {
+          const { data, error } = await sb.auth.signUp({ email: email.value, password: pass.value, options: { emailRedirectTo: redirectTo, data: { full_name: name.value } } });
+          if (error) throw error;
+          if (!data.session) return inbox(email.value);
+        } else {
+          const { error } = await sb.auth.signInWithPassword({ email: email.value, password: pass.value });
+          if (error && /not confirmed/i.test(error.message)) return inbox(email.value);
+          if (error) throw error;
+        }
+        m.close(); flash(""); boot();
+      });
     });
-  });
+    const google = el("button", { type: "button", class: "rl-google" }, el("b", {}, "G"), "Continue with Google");
+    google.addEventListener("click", async () => {
+      if (!live) return notYet();
+      try { sessionStorage.setItem("wantedRole", roleKey); } catch (_) {}
+      const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo } });
+      if (error) say(error.message, "error");
+    });
+    fill(body,
+      el("div", { class: "rl-signin-head" }, el("span", { class: "rl-role-ic" + (roleKey === "planner" ? " dark" : "") }, svgIcon(role.icon)),
+        el("div", {}, el("b", {}, creating ? `Create a ${role.name} account` : `Sign in as ${role.name === "Player" ? "a Player" : "a Team Planner"}`), el("small", {}, role.tag))),
+      google, el("div", { class: "rl-or" }, el("span", {}, "or with your school email")), form, note,
+      demoBtn ? el("div", { class: "rl-demo-row" }, demoBtn, el("small", {}, "Explore with sample data. Nothing is saved.")) : null,
+      el("p", { class: "rl-switch" }, creating ? "Already on Rally? " : "New to Rally? ",
+        el("button", { type: "button", class: "rl-link", onclick: () => { mode = creating ? "signin" : "create"; say(""); draw(); } }, creating ? "Sign in" : "Create an account")),
+      !live ? el("p", { class: "rl-preview" }, "Preview: real sign-in turns on once the team's Supabase account is connected.") : null);
+  }
+  function inbox(address) {
+    fill(body, el("div", { class: "success-box", "aria-hidden": "true" }, "✉"),
+      el("p", { class: "modal-copy" }, "We sent a confirmation link to ", el("b", {}, address), ". Open it on this device to finish creating your account."),
+      el("button", { type: "button", class: "rl-primary", onclick: (e) => busy(e.currentTarget, async () => {
+        const { error } = await sb.auth.resend({ type: "signup", email: address, options: { emailRedirectTo: redirectTo } });
+        if (error) throw error; flash("Sent. Check your inbox.", "ok");
+      }) }, "Resend email"));
+  }
+  draw();
+  m = modal(mode === "create" ? "Join Rally" : "Welcome back", body, { eyebrow: "RALLY" });
+  m.box.classList.add("rl-modal");
 }
 
 /* Returning from the confirmation email (or Google): Supabase puts the session or an error in the
@@ -240,8 +275,8 @@ function authReturn() {
   const h = location.hash;
   if (!/access_token=|error_description=/.test(h)) return;
   const params = new URLSearchParams(h.replace(/^#/, ""));
-  if (params.get("error_description")) flash(params.get("error_description").replace(/\+/g, " ") + ". Try signing in, or resend the email.", "error");
-  else if (params.get("type") === "signup") flash("Email confirmed. Welcome!", "ok");
+  if (params.get("error_description")) flash(params.get("error_description").replace(/\+/g, " ") + ". Try signing in again.", "error");
+  else if (params.get("type") === "signup") flash("Email confirmed. Welcome to Rally!", "ok");
   history.replaceState(null, "", location.pathname + "#/home");
 }
 
@@ -305,7 +340,9 @@ async function boot() {
   }
   const p = state.me.profile;
   if (!p || !p.team_id) {
-    const nameInput = $("#onboard-form").full_name;
+    const form = $("#onboard-form");
+    try { if (sessionStorage.getItem("wantedRole") === "player") { form.role.value = "player"; form.dispatchEvent(new Event("change")); } } catch (_) {}
+    const nameInput = form.full_name;
     if (!nameInput.value && state.me.user.name) nameInput.value = state.me.user.name;
     return showView("onboard");
   }
@@ -338,10 +375,10 @@ function renderShell() {
   $("#team-sub").textContent = team.home_name ? `Home: ${team.home_name}` : "Away game travel";
   $("#avatar").textContent = initials(p.full_name);
   $("#who-name").textContent = p.full_name;
-  $("#who-role").textContent = p.role;
+  $("#who-role").textContent = roleName(p.role);
   $("#who-email").textContent = state.me.user.email || "";
   fill($("#season"), el("span", {}, `${new Date().getFullYear()} SEASON`), el("strong", {}, team.name || ""),
-    el("small", {}, isCoach() ? "Coach workspace" : "Player account"));
+    el("small", {}, isCoach() ? "Team Planner workspace" : "Player account"));
   $("#role-toggle").hidden = $("#demo-label").hidden = !CFG.demo;
   $$("[data-demo-switch]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.demoSwitch === demoToken));
   $("#chat-input").placeholder = isCoach() ? "e.g. Which package is closest to the stadium?" : "e.g. When does the bus leave?";
@@ -544,7 +581,7 @@ const teamLabel = (t) => (t.rank ? `#${t.rank} ` : "") + (t.short || t.full);
 
 function ncaaSummary(info, { compact = false } = {}) {
   if (!info.linked) {
-    return [el("p", { class: "sub" }, isCoach() ? "Link your NCAA program to see your record, ranking and away games." : "Your coach hasn't linked the team to its NCAA program yet."),
+    return [el("p", { class: "sub" }, isCoach() ? "Link your NCAA program to see your record, ranking and away games." : "Your team planner hasn't linked the team to its NCAA program yet."),
       isCoach() ? el("button", { type: "button", class: "text-btn", onclick: () => go("team") }, "Link NCAA team →") : null];
   }
   const s = info.summary || {};
@@ -1037,7 +1074,7 @@ async function teamPage() {
     const shown = team.players.filter((p) => p.full_name.toLowerCase().includes(ui.q) && (ui.diet === "all" || (p.diet_tags || []).includes(ui.diet)));
     fill(table, el("div", { class: "table-row table-header" }, el("span", {}, "Member"), el("span", {}, "Role"), el("span", {}, "Dietary needs"), el("span", {}, "Joined")),
       el("div", { class: "table-row" }, el("span", { class: "member" }, el("i", {}, initials(state.me.profile.full_name)), el("b", {}, state.me.profile.full_name, el("small", {}, state.me.user.email || "You"))),
-        el("span", {}, el("em", { class: "pill ok" }, state.me.is_main_planner ? "Main planner" : "Coach")), el("span", {}, "–"), el("span", {}, fmt(state.me.profile.created_at, { month: "short", day: "numeric", year: "numeric" }))),
+        el("span", {}, el("em", { class: "pill ok" }, state.me.is_main_planner ? "Main planner" : "Team Planner")), el("span", {}, "–"), el("span", {}, fmt(state.me.profile.created_at, { month: "short", day: "numeric", year: "numeric" }))),
       shown.map((p) => el("div", { class: "table-row" }, el("span", { class: "member" }, el("i", {}, initials(p.full_name)), el("b", {}, p.full_name)),
         el("span", {}, "Player"), el("span", {}, (p.diet_tags || []).length ? p.diet_tags.map((d) => el("span", { class: "tag" }, label(d))) : "None"),
         el("span", {}, fmt(p.created_at, { month: "short", day: "numeric", year: "numeric" })))),
@@ -1049,7 +1086,7 @@ async function teamPage() {
   const staff = team.staff || [];
   const others = staff.filter((c) => c.id !== team.team.owner_id);
   const plannerName = (staff.find((c) => c.id === team.team.owner_id) || {}).full_name || "Not set";
-  const handOver = el("select", { "aria-label": "Coach to make main planner" }, others.map((c) => el("option", { value: c.id }, c.full_name)));
+  const handOver = el("select", { "aria-label": "Team planner to make main planner" }, others.map((c) => el("option", { value: c.id }, c.full_name)));
   const handBtn = el("button", { type: "button", class: "secondary" }, "Make main planner");
   handBtn.addEventListener("click", async () => {
     const who = others.find((c) => c.id === handOver.value);
@@ -1064,10 +1101,10 @@ async function teamPage() {
   });
   fill(staffBox, el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "Staff"), el("h2", {}, "Main planner")),
     el("span", { class: "sub" }, plannerName)),
-    el("p", { class: "sub", style: "margin-bottom:12px" }, "Only the main planner can book hotels, buses and restaurants. Other coaches can see trips and prepare plans."),
-    staff.map((c) => el("div", { class: "kv" }, el("span", {}, c.full_name), el("b", {}, c.id === team.team.owner_id ? el("em", { class: "pill ok" }, "Main planner") : "Coach"))),
+    el("p", { class: "sub", style: "margin-bottom:12px" }, "Only the main planner can book hotels, buses and restaurants. Other team planners can see trips and prepare plans."),
+    staff.map((c) => el("div", { class: "kv" }, el("span", {}, c.full_name), el("b", {}, c.id === team.team.owner_id ? el("em", { class: "pill ok" }, "Main planner") : "Team Planner"))),
     state.me.is_main_planner && others.length ? el("div", { class: "row", style: "margin-top:14px" }, handOver, handBtn)
-      : state.me.is_main_planner ? el("p", { class: "hint", style: "margin-top:10px" }, "When another coach joins your team you can hand the role to them here.") : null);
+      : state.me.is_main_planner ? el("p", { class: "hint", style: "margin-top:10px" }, "When another team planner joins your team you can hand the role to them here.") : null);
   add(page, el("div", { class: "table-tools" }, search, diet), table, staffBox, ncaaBox);
   renderTeamNcaa(ncaaBox);
   return page;
@@ -1150,7 +1187,7 @@ async function playerHome() {
   if (!t) {
     add(page, el("div", { class: "player-hero", "data-mark": initials(teamName()) },
       el("div", {}, el("span", { class: "eyebrow light" }, "NEXT AWAY GAME"), el("h1", {}, "No away trips yet."),
-        el("p", {}, "Your coach hasn't scheduled the next away game. You'll see it here as soon as they do."))));
+        el("p", {}, "Your team planner hasn't scheduled the next away game. You'll see it here as soon as they do."))));
   } else {
     const city = cityOf(t.venue_address) || t.venue_name;
     const depart = t.published && t.suggested_departure ? t.suggested_departure : null;
@@ -1171,7 +1208,7 @@ async function playerHome() {
       el("section", { class: "journey" }, el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "Your travel day"),
         el("h2", {}, fmt(t.published && t.suggested_departure ? t.suggested_departure : t.match_at, { weekday: "long", month: "long", day: "numeric" })))),
         steps.map((x, i) => el("div", { class: "journey-row" }, el("i", {}, i + 1), el("b", {}, x[0]), el("span", {}, el("strong", {}, x[1]), el("small", {}, x[2])))),
-        !t.published ? el("p", { class: "sub", style: "margin-top:12px" }, "Your coach is still planning. The bus time and hotel appear here once they publish the plan.") : null,
+        !t.published ? el("p", { class: "sub", style: "margin-top:12px" }, "Your team planner is still planning. The bus time and hotel appear here once they publish the plan.") : null,
         el("div", { class: "rsvp-box" }, el("b", {}, "Are you going?"), rsvpButtons(t))),
       el("section", { class: "room-card" }, el("span", { class: "eyebrow" }, "Your stay"),
         el("div", { class: "hotel-thumb" }, t.hotel && t.hotel.photo_url ? hotelPhoto(t.hotel) : el("div", { class: "hotel-art art-1" }, el("span", {}, city))),
@@ -1181,7 +1218,7 @@ async function playerHome() {
       feed[0] ? el("section", { class: "player-notice" }, el("span", {}, `${feed[0].read ? "" : "NEW · "}${fmt(feed[0].created_at, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).toUpperCase()}`),
         el("h2", {}, feed[0].title), el("p", { class: "pre" }, feed[0].body.length > 220 ? feed[0].body.slice(0, 220) + "..." : feed[0].body),
         el("button", { type: "button", class: "text-btn", onclick: () => go("announcements") }, "Read all updates →"))
-        : el("section", { class: "player-notice" }, el("span", {}, "ANNOUNCEMENTS"), el("h2", {}, "No updates yet"), el("p", {}, "Your coach's messages show up here."))));
+        : el("section", { class: "player-notice" }, el("span", {}, "ANNOUNCEMENTS"), el("h2", {}, "No updates yet"), el("p", {}, "Your team planner's messages show up here."))));
   }
   const ncaa = el("section", { class: "activity", style: "margin-top:24px" }, el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "NCAA"), el("h2", {}, "Our season"))));
   add(page, ncaa);
@@ -1205,8 +1242,8 @@ function rsvpButtons(t) {
 async function playerTrips() {
   const trips = await loadTrips();
   const list = [...upcoming(trips), ...pastOrCancelled(trips)];
-  const page = el("div", { class: "page" }, intro("Away games", "Your trips", "Only the travel information your coach has published is shown here."));
-  if (!list.length) add(page, el("div", { class: "empty" }, el("b", {}, "No trips yet"), el("p", {}, "Your coach hasn't planned an away trip.")));
+  const page = el("div", { class: "page" }, intro("Away games", "Your trips", "Only the travel information your team planner has published is shown here."));
+  if (!list.length) add(page, el("div", { class: "empty" }, el("b", {}, "No trips yet"), el("p", {}, "Your team planner hasn't planned an away trip.")));
   for (const t of list) {
     const my = t.my || {};
     const city = cityOf(t.venue_address) || t.venue_name;
@@ -1225,11 +1262,11 @@ async function playerTrips() {
         el("div", { class: "rsvp-box" }, el("b", {}, "Are you going?"), rsvpButtons(t)),
         t.restaurant ? el("details", { class: "menu" }, el("summary", {}, diet.length ? `Dishes that fit your diet (${diet.map(label).join(", ")})` : "Team meal menu"),
           el("ul", {}, (t.my_menu || []).length ? t.my_menu.map((m) => el("li", {}, el("span", {}, m.name), el("span", { class: "sub" }, m.course)))
-            : el("li", { class: "sub" }, "No dish matches all your needs. Tell your coach."))) : null,
+            : el("li", { class: "sub" }, "No dish matches all your needs. Tell your team planner."))) : null,
         el("div", { class: "row", style: "margin-top:16px" }, el("button", { type: "button", class: "secondary small", onclick: () => go("itinerary/" + t.id) }, "Itinerary"),
           t.hotel ? el("a", { class: "text-btn small", href: t.hotel.maps_url || gmapsLink(t.hotel.lat, t.hotel.lng), target: "_blank", rel: "noopener" }, "Hotel on Google Maps ↗") : null,
           el("a", { class: "text-btn small", href: gmapsLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Stadium on Google Maps ↗")),
-        el("p", { class: "privacy" }, "Travel costs and coach planning notes are hidden from player accounts."))));
+        el("p", { class: "privacy" }, "Travel costs and planning notes are hidden from player accounts."))));
   }
   return page;
 }
@@ -1241,7 +1278,7 @@ async function itinerary(id) {
   const pick = id ? pool.find((t) => t.id === id) : upcoming(pool)[0] || pool[0];
   const page = el("div", { class: "page" });
   if (!pick) {
-    add(page, intro("Itinerary", "Trip itinerary", ""), el("div", { class: "empty" }, el("b", {}, "No trips yet"), el("p", {}, isCoach() ? "Plan a trip first." : "Your coach hasn't planned an away trip.")));
+    add(page, intro("Itinerary", "Trip itinerary", ""), el("div", { class: "empty" }, el("b", {}, "No trips yet"), el("p", {}, isCoach() ? "Plan a trip first." : "Your team planner hasn't planned an away trip.")));
     return page;
   }
   const t = isCoach() ? await api(`/api/trips/${pick.id}`) : pick;
@@ -1265,7 +1302,7 @@ async function itinerary(id) {
     if (src.restaurant) items.push({ time: "Team meal", kind: "Meal", title: `Team meal at ${src.restaurant.name}`, detail: `${cap(src.restaurant.cuisine)} · ${src.restaurant.km_to_venue} km from the venue`,
       more: isCoach() ? [src.restaurant.missing_diets && src.restaurant.missing_diets.length ? `No main dish for ${src.restaurant.missing_diets.map(label).join(", ")}.` : "Every dietary need on the roster is covered.",
         el("button", { type: "button", class: "text-btn small", onclick: () => openMenu(src.restaurant.id, src.restaurant.name, t.diet_tags || []) }, "View menu →")]
-        : [(t.my_menu || []).length ? `Fits your diet: ${t.my_menu.filter((m) => m.course === "main").map((m) => m.name).join(", ") || t.my_menu.map((m) => m.name).join(", ")}.` : "No dish matches all your needs. Tell your coach."] });
+        : [(t.my_menu || []).length ? `Fits your diet: ${t.my_menu.filter((m) => m.course === "main").map((m) => m.name).join(", ") || t.my_menu.map((m) => m.name).join(", ")}.` : "No dish matches all your needs. Tell your team planner."] });
   }
   items.push({ time: dowTime(t.match_at), kind: "Game", title: `${teamName()} at ${t.opponent}`, detail: [t.venue_name, t.venue_address].filter(Boolean).join(" · "),
     more: [el("a", { href: gmapsLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Stadium on Google Maps ↗")] });
@@ -1275,10 +1312,10 @@ async function itinerary(id) {
     el("select", { value: pick.id, onchange: (e) => go("itinerary/" + e.target.value) }, pool.sort(byDate).map((x) => el("option", { value: x.id }, `at ${x.opponent} · ${dayShort(x.match_at)}`)))) : null;
   add(page, el("div", { class: "page-intro" },
     el("div", {}, el("span", { class: "eyebrow" }, `${t.opponent} · ${dayShort(t.match_at)}`), el("h1", {}, "Trip itinerary"),
-      el("p", {}, isCoach() ? (t.published ? "Shared with players" : src && src.final ? "Coach view · not shared with players yet" : "Draft based on the recommended package") : t.published ? "From your coach's published plan" : "The coach hasn't published the travel plan yet")),
+      el("p", {}, isCoach() ? (t.published ? "Shared with players" : src && src.final ? "Team planner view · not shared with players yet" : "Draft based on the recommended package") : t.published ? "From your team planner's published plan" : "Your team planner hasn't published the travel plan yet")),
     el("div", { class: "header-buttons" }, chooser, isCoach() ? el("button", { type: "button", class: "primary", onclick: () => go("trips/" + t.id) }, t.published ? "Open trip" : "Open trip to publish") : null)));
   add(page, el("div", { class: "publish-banner" + (t.published ? " live" : "") }, el("b", {}, t.published ? "● LIVE ITINERARY" : "○ DRAFT ITINERARY"),
-    el("span", {}, t.published ? "Players can see everything below." : isCoach() ? "Only coaches can see the travel items until you publish the plan." : "Only the game is shown until your coach publishes the plan.")));
+    el("span", {}, t.published ? "Players can see everything below." : isCoach() ? "Only team planners can see the travel items until you publish the plan." : "Only the game is shown until your team planner publishes the plan.")));
   let open = 0;
   const tl = el("div", { class: "timeline" });
   const draw = () => fill(tl, ...items.map((x, i) => el("article", {},
@@ -1344,7 +1381,7 @@ async function announcementsPage() {
         el("p", {}, el("b", {}, a.author), el("small", {}, fmt(a.created_at, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))), unread ? el("em", {}, "NEW") : null),
       el("h2", {}, a.title), el("p", { class: "pre" }, a.body),
       el("div", { class: "post-foot" }, el("span", {}, [tripName(a.trip_id), "Sent to the team"].filter(Boolean).join(" · ")), save));
-  }) : el("div", { class: "empty" }, el("b", {}, "No announcements yet"), el("p", {}, isCoach() ? "Post travel updates here; every player on the team sees them." : "Your coach's travel updates show up here."))));
+  }) : el("div", { class: "empty" }, el("b", {}, "No announcements yet"), el("p", {}, isCoach() ? "Post travel updates here; every player on the team sees them." : "Your team planner's travel updates show up here."))));
   return page;
 }
 
@@ -1375,9 +1412,9 @@ async function settingsPage() {
       await api("/api/me", { method: "PATCH", body: { diet_tags: checkedDiets(box) } });
       state.me = await api("/api/me"); flash("Saved. Menus now show dishes that fit.", "ok");
     }));
-    sections.push(el("section", {}, el("h2", {}, "Dietary needs"), el("p", { class: "sub", style: "margin-bottom:10px" }, "Your coach sees these when choosing restaurants. Your menu shows dishes that fit all of them."), box, save));
+    sections.push(el("section", {}, el("h2", {}, "Dietary needs"), el("p", { class: "sub", style: "margin-bottom:10px" }, "Your team planner sees these when choosing restaurants. Your menu shows dishes that fit all of them."), box, save));
   }
-  sections.push(el("section", {}, el("h2", {}, "Account"), kv("Role", label(p.role)), kv("Team", team.name || ""),
+  sections.push(el("section", {}, el("h2", {}, "Account"), kv("Role", roleName(p.role)), kv("Team", team.name || ""),
     kv("Signed in with", CFG.demo ? "Demo account" : state.me.user.provider === "google" ? "Google" : "Email & password"),
     el("button", { type: "button", class: "secondary", style: "margin-top:14px", onclick: signOut }, "Sign out")));
   return el("div", { class: "page" }, intro(isCoach() ? "Workspace" : "Player account", isCoach() ? "Settings" : "Your profile", "Manage your account and travel details."),
@@ -1478,7 +1515,7 @@ function renderChat() {
   $("#chat-input").disabled = off;
   $$("#chat-chips button").forEach((b) => (b.disabled = off));
   if (off) return fill(log, el("div", { class: "msg assistant" }, "Aivana isn't connected yet, so this panel can't answer. ",
-    isCoach() ? "Add AIVANA_API_KEY to the server's .env file and restart it." : "Ask your coach."));
+    isCoach() ? "Add AIVANA_API_KEY to the server's .env file and restart it." : "Ask your team planner."));
   if (!chat.length) return fill(log, el("div", { class: "msg assistant" }, isCoach()
     ? "Ask Aivana to compare packages, explain the recommendation, prepare a booking for the main planner to approve, or look up NCAA info."
     : "Ask Aivana about your trip: bus time, hotel, room, what you can eat, or RSVP."));

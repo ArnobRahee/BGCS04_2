@@ -139,7 +139,7 @@ def onboard():
     role = b.get("role")
     diet = [t for t in (b.get("diet_tags") or []) if t in DIET_TAGS]
     if not name or role not in ("coach", "player"):
-        return jsonify({"error": "Enter your name and choose coach or player."}), 400
+        return jsonify({"error": "Enter your name and choose Team Planner or Player."}), 400
     if role == "coach":
         try:
             team_row = {"name": str(b["team_name"]).strip(), "home_name": str(b.get("home_name") or "Home campus"),
@@ -154,7 +154,7 @@ def onboard():
         code = str(b.get("join_code") or "").strip().upper()
         found = DB.select("teams", {"join_code": code})
         if not found:
-            return jsonify({"error": "That join code doesn't match any team. Ask your coach for it."}), 400
+            return jsonify({"error": "That join code doesn't match any team. Ask your team planner for it."}), 400
         team = found[0]
     profile = {"id": g.user["id"], "full_name": name, "role": role, "team_id": team["id"], "diet_tags": diet}
     if g.profile:
@@ -202,7 +202,7 @@ def transfer_planner():
     team = require_main_planner()
     new_id = str(body().get("profile_id") or "")
     if not DB.select("profiles", {"id": new_id, "team_id": team["id"], "role": "coach"}):
-        raise PlanError("Pick a coach on your team.")
+        raise PlanError("Pick a team planner on your team.")
     return jsonify(DB.update("teams", {"owner_id": new_id}, {"id": team["id"]})[0])
 
 
@@ -331,7 +331,7 @@ def announcements():
     saved = {s["announcement_id"] for s in DB.select("saved_items", {"user_id": g.profile["id"], "announcement_id": ids})}
     authors = {p["id"]: p["full_name"] for p in DB.select("profiles", {"team_id": g.profile["team_id"], "role": "coach"})}
     return jsonify([{**a, "read": a["id"] in read, "saved": a["id"] in saved,
-                     "author": authors.get(a.get("author_id"), "Coach")} for a in rows])
+                     "author": authors.get(a.get("author_id"), "Team planner")} for a in rows])
 
 
 @app.post("/api/trips/<trip_id>/announcements")

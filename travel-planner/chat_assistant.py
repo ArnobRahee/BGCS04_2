@@ -87,7 +87,7 @@ class ChatAssistant:
         if not self.aivana.configured:
             return {"reply": "Aivana isn't connected yet, so the assistant can't answer. "
                              + ("Add AIVANA_API_KEY to the server's .env file and restart it." if profile["role"] == "coach"
-                                else "Ask your coach."), "action": None, "source": "not_connected"}
+                                else "Ask your team planner."), "action": None, "source": "not_connected"}
         ctx = self.context(profile, team, focus_trip_id)
         try:
             reply, action = self._ask_ai(profile, ctx, messages)
