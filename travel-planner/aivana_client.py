@@ -1,8 +1,13 @@
 """AivanaClient: wrapper around the Aivana API.
 
-IMPORTANT: Aivana's real endpoint and payload format aren't known yet. Fill in the TODO
-spots in _post() from their docs. Until then (or if a call fails) the app uses local
-fallbacks, so the demo always works:
+Configure with environment variables (never in code):
+  AIVANA_API_URL    full endpoint URL
+  AIVANA_API_KEY    sent as "Authorization: Bearer <key>"
+  AIVANA_API_STYLE  "openai" (default): body {"model", "messages"} -> choices[0].message.content
+                    "prompt": body {"prompt"} -> "response" (or "text"/"output") field
+  AIVANA_MODEL      model name for the "openai" style (optional)
+If Aivana's API looks different, change only complete(). Until it's configured (or if a call
+fails) the app uses local fallbacks, so the demo always works:
   - recommend(): scores packages on budget, diet coverage, distance, stars and cost
   - draft_announcement(): fills a message template from the booked package
 The AI only ranks and writes text. Every number comes from CostCalc.
@@ -17,18 +22,42 @@ import requests
 class AivanaClient:
     def __init__(self):
         self.api_key = os.environ.get("AIVANA_API_KEY", "").strip()
-        self.api_url = os.environ.get("AIVANA_API_URL", "").strip()   # TODO: set from Aivana docs
+        self.api_url = os.environ.get("AIVANA_API_URL", "").strip()
+        self.style = os.environ.get("AIVANA_API_STYLE", "openai").strip().lower()
+        self.model = os.environ.get("AIVANA_MODEL", "").strip()
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.api_url)
 
+    def complete(self, messages: list[dict]) -> str:
+        """Send a conversation ([{role, content}]) and return the model's text."""
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        if self.style == "prompt":
+            text = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages) + "\n\nASSISTANT:"
+            body = {"prompt": text}
+        else:
+            body = {"messages": messages, "temperature": 0.3}
+            if self.model:
+                body["model"] = self.model
+        resp = requests.post(self.api_url, headers=headers, json=body, timeout=45)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Aivana returned {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        if self.style == "prompt":
+            return str(data.get("response") or data.get("text") or data.get("output") or "")
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("Unexpected Aivana response shape; set AIVANA_API_STYLE or adjust complete()") from exc
+
     def _post(self, prompt: str) -> str:
-        # TODO: adjust headers / body / response field to Aivana's actual API.
-        resp = requests.post(self.api_url, headers={"Authorization": f"Bearer {self.api_key}"},
-                             json={"prompt": prompt}, timeout=30)
-        resp.raise_for_status()
-        return resp.json().get("response", "")
+        """One-shot prompt that must return JSON; strips ```json fences models like to add."""
+        raw = self.complete([{"role": "user", "content": prompt}]).strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            raw = raw.rsplit("```", 1)[0]
+        return raw.strip()
 
     # -- recommendation ----------------------------------------------------
     def recommend(self, request: dict, packages: list[dict]) -> dict:

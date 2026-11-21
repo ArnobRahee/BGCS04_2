@@ -10,6 +10,10 @@
 <body>
   <header class="topbar">
     <div class="brand">Away Game Travel Planner</div>
+    <nav id="mainnav" class="nav" hidden>
+      <button type="button" class="navbtn" data-nav="home" aria-current="page">My team</button>
+      <button type="button" class="navbtn" data-nav="ncaa">NCAA</button>
+    </nav>
     <div id="whoami" class="who" hidden>
       <span id="who-name"></span>
       <button id="signout" class="link" type="button">Sign out</button>
@@ -30,6 +34,10 @@
           <button type="button" data-demo="demo-coach">Try as coach</button>
           <button type="button" class="secondary" data-demo="demo-player">Try as player</button>
         </div>
+      </div>
+      <div id="google-box" class="card stack" hidden>
+        <button type="button" id="google-btn" class="google">Continue with Google</button>
+        <p class="sub center">or use email and password</p>
       </div>
       <form id="auth-form" class="card stack" hidden>
         <div class="tabs" role="tablist">
@@ -78,6 +86,7 @@
             <p class="code" id="join-code"></p>
             <p class="sub" id="roster-line"></p>
           </div>
+          <div class="card stack" id="coach-ncaa"></div>
           <div class="card stack">
             <div class="row between"><h2>Trips</h2><button type="button" id="new-trip-btn" class="small">New trip</button></div>
             <ul id="trip-list" class="list"></ul>
@@ -88,7 +97,11 @@
             <h2>New away trip</h2>
             <div class="grid">
               <label>Opponent <input name="opponent" required></label>
-              <label>Away venue <select name="venue_id" id="venue-select" required></select></label>
+              <label>Away venue <select name="venue_id" id="venue-select"></select></label>
+              <label data-custom-venue hidden>Venue name <input name="venue_name"></label>
+              <label data-custom-venue hidden>Venue latitude <input name="venue_lat" type="number" step="any"></label>
+              <label data-custom-venue hidden>Venue longitude <input name="venue_lng" type="number" step="any"></label>
+              <input type="hidden" name="ncaa_game_id">
               <label>Match date and time <input name="match_at" type="datetime-local" required></label>
               <label>Bus can't leave before <input name="depart_after" type="datetime-local"></label>
               <label>Hotel nights <input name="nights" type="number" min="0" value="1"></label>
@@ -109,6 +122,7 @@
     <section id="view-player" class="view" hidden>
       <div class="split">
         <aside class="stack">
+          <div class="card stack" id="player-ncaa"></div>
           <div class="card stack">
             <h2 id="p-team"></h2>
             <fieldset class="choice"><legend>My dietary needs</legend><div class="diet-boxes" id="my-diet"></div></fieldset>
@@ -123,7 +137,35 @@
         </div>
       </div>
     </section>
+    <!-- NCAA explorer (both roles) -->
+    <section id="view-ncaa" class="view stack" hidden>
+      <div class="row between"><h1>NCAA</h1><p class="sub" id="ncaa-note">Data from ncaa.com via the free ncaa-api. Rosters aren't published there.</p></div>
+      <div class="card grid">
+        <label>Sport <select id="nx-sport"></select></label>
+        <label>Division <select id="nx-division"></select></label>
+        <label>Date (scores) <input id="nx-date" type="date"></label>
+        <label>Find a school <input id="nx-school" placeholder="e.g. Kent State" autocomplete="off"></label>
+      </div>
+      <div class="tabs" role="tablist" id="nx-tabs">
+        <button type="button" role="tab" class="tab" data-tab="rankings" aria-selected="true">Rankings</button>
+        <button type="button" role="tab" class="tab" data-tab="standings" aria-selected="false">Standings</button>
+        <button type="button" role="tab" class="tab" data-tab="scores" aria-selected="false">Scores</button>
+        <button type="button" role="tab" class="tab" data-tab="schools" aria-selected="false">Schools</button>
+      </div>
+      <div id="nx-body" class="stack"></div>
+    </section>
   </main>
+
+  <button type="button" id="chat-toggle" class="chat-toggle" hidden aria-expanded="false" aria-controls="chat-panel">Ask Aivana</button>
+  <section id="chat-panel" class="chat-panel" hidden aria-label="Aivana assistant">
+    <header class="row between"><strong>Aivana assistant</strong>
+      <span class="row"><button type="button" class="link" id="chat-clear">Clear</button><button type="button" class="link" id="chat-close">Close</button></span></header>
+    <div id="chat-log" class="chat-log" aria-live="polite"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" autocomplete="off" placeholder="Ask about your trip, team or games" aria-label="Message">
+      <button type="submit" class="small">Send</button>
+    </form>
+  </section>
 
   <dialog id="menu-dialog">
     <form method="dialog" class="stack">

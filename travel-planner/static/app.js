@@ -33,6 +33,7 @@ function flash(msg, kind = "info") {
 
 async function token() {
   if (CFG.demo) return demoToken;
+  if (!sb) return null;
   const { data } = await sb.auth.getSession();
   return data.session ? data.session.access_token : null;
 }
@@ -51,6 +52,19 @@ async function api(path, opts = {}) {
     err.data = data;
     throw err;
   }
+  return data;
+}
+
+/* Browser cache for slow-changing GETs (NCAA data). Falls back to the network if storage is unavailable. */
+async function cached(path, minutes) {
+  const key = "cache:" + path;
+  try {
+    const hit = JSON.parse(localStorage.getItem(key) || "null");
+    if (hit && hit.until > Date.now()) return hit.data;
+  } catch (_) { /* storage blocked or corrupt */ }
+  const data = await api(path);
+  try { localStorage.setItem(key, JSON.stringify({ until: Date.now() + minutes * 60000, data })); }
+  catch (_) { try { for (const k of Object.keys(localStorage)) if (k.startsWith("cache:")) localStorage.removeItem(k); } catch (__) {} }
   return data;
 }
 
@@ -74,6 +88,12 @@ function setupAuth() {
     }
     return;
   }
+  if (!sb) { flash("Couldn't load the sign-in library. Check your internet connection and reload.", "error"); return; }
+  $("#google-box").hidden = false;
+  $("#google-btn").addEventListener("click", async () => {
+    const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin + window.location.pathname } });
+    if (error) flash(error.message, "error");
+  });
   const form = $("#auth-form");
   form.hidden = false;
   let mode = "signin";
@@ -103,6 +123,9 @@ $("#signout").addEventListener("click", async () => {
   demoToken = null;
   state = { me: null, trips: [], current: null, venues: [] };
   $("#whoami").hidden = true;
+  $("#mainnav").hidden = true;
+  closeChat();
+  $("#chat-toggle").hidden = true;
   flash("");
   show("auth");
 });
@@ -146,10 +169,26 @@ async function boot() {
   $("#whoami").hidden = false;
   const p = state.me.profile;
   $("#who-name").textContent = p ? `${p.full_name} (${p.role})` : state.me.user.email;
-  if (!p || !p.team_id) return show("onboard");
-  if (p.role === "coach") return coachHome();
-  return playerHome();
+  if (!p || !p.team_id) {
+    const nameInput = $("#onboard-form").full_name;
+    if (!nameInput.value && state.me.user.name) nameInput.value = state.me.user.name;
+    return show("onboard");
+  }
+  $("#mainnav").hidden = false;
+  $("#chat-toggle").hidden = false;
+  loadChat();
+  return goHome();
 }
+
+function goHome() {
+  setNav("home");
+  return state.me.profile.role === "coach" ? coachHome() : playerHome();
+}
+
+function setNav(which) {
+  document.querySelectorAll("[data-nav]").forEach((b) => b.setAttribute("aria-current", b.dataset.nav === which ? "page" : "false"));
+}
+document.querySelectorAll("[data-nav]").forEach((b) => b.addEventListener("click", () => (b.dataset.nav === "ncaa" ? openExplorer() : goHome())));
 
 /* ================= COACH ================= */
 async function coachHome() {
@@ -162,8 +201,9 @@ async function coachHome() {
   $("#join-code").textContent = team.team.join_code;
   const needs = [...new Set(team.players.flatMap((p) => p.diet_tags || []))];
   $("#roster-line").textContent = `${team.players.length} players joined` + (needs.length ? ` · needs: ${needs.map(label).join(", ")}` : "");
-  $("#venue-select").replaceChildren(...venues.map((v) => el("option", { value: v.id }, v.name)));
+  $("#venue-select").replaceChildren(...venues.map((v) => el("option", { value: v.id }, v.name)), el("option", { value: "" }, "Other venue..."));
   renderTripList();
+  renderTeamNcaa($("#coach-ncaa"), true);
   if (!state.current && trips.length) openTrip(trips[trips.length - 1].id);
   else if (state.current) openTrip(state.current.id);
 }
@@ -178,18 +218,37 @@ function renderTripList() {
 
 const statusText = (s) => ({ PLANNING: "Planning", AWAITING_APPROVAL: "Waiting for approval", BOOKED: "Booked", CANCELLED: "Cancelled", COMPLETED: "Completed", IN_PROGRESS: "On the road", DRAFT: "Draft" }[s] || s);
 
-$("#new-trip-btn").addEventListener("click", () => {
+$("#new-trip-btn").addEventListener("click", () => openTripForm({}));
+$("#venue-select").addEventListener("change", toggleCustomVenue);
+
+function toggleCustomVenue() {
+  const custom = !$("#venue-select").value;
+  document.querySelectorAll("[data-custom-venue]").forEach((l) => { l.hidden = !custom; l.querySelector("input").required = custom; });
+}
+
+function openTripForm(prefill) {
   const f = $("#trip-form");
+  f.reset();
   f.hidden = false;
   f.num_players.value = state.team.players.length || 20;
+  f.opponent.value = prefill.opponent || "";
+  if (prefill.match_at) f.match_at.value = prefill.match_at;
+  f.ncaa_game_id.value = prefill.ncaa_game_id || "";
+  f.venue_id.value = prefill.venue_id || (prefill.venue_name ? "" : (state.venues[0] || {}).id || "");
+  f.venue_name.value = prefill.venue_name || "";
+  toggleCustomVenue();
   $("#trip-detail").replaceChildren();
-  f.opponent.focus();
-});
+  setNav("home");
+  show("coach");
+  (prefill.venue_name ? f.venue_lat : f.opponent).focus();
+  if (prefill.venue_name) flash("Enter the venue's latitude and longitude (right-click the stadium in Google Maps to copy them).", "info");
+}
 $("#trip-cancel").addEventListener("click", () => { $("#trip-form").hidden = true; if (state.current) openTrip(state.current.id); });
 $("#trip-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const f = e.target;
   const data = Object.fromEntries(new FormData(f));
+  for (const k of ["venue_id", "venue_name", "venue_lat", "venue_lng", "ncaa_game_id", "depart_after"]) if (!data[k]) delete data[k];
   busy(f.querySelector("button[type=submit]"), async () => {
     const trip = await api("/api/trips", { method: "POST", body: data });
     f.hidden = true;
@@ -198,7 +257,7 @@ $("#trip-form").addEventListener("submit", (e) => {
     state.trips = await api("/api/trips");
     renderTripList();
     renderCoachTrip(trip);
-    flash(`Priced ${trip.packages.length} packages for ${trip.opponent}.`, "ok");
+    flash(`${trip.opponent}: ${trip.packages.length} packages priced.`, "ok");
   });
 });
 
@@ -362,6 +421,7 @@ async function playerHome() {
   const [trips, feed] = await Promise.all([api("/api/trips"), api("/api/announcements")]);
   renderPlayerTrips(trips);
   renderFeed(feed);
+  renderTeamNcaa($("#player-ncaa"), false);
 }
 
 $("#save-diet").addEventListener("click", (e) => busy(e.target, async () => {
@@ -420,6 +480,216 @@ function renderFeed(feed) {
     if (!a.read) api(`/api/announcements/${a.id}/read`, { method: "POST" }).catch(() => {});
     return card;
   }));
+}
+
+/* ================= NCAA: team card ================= */
+const gameWhen = (g) => (g.start_epoch ? when(new Date(g.start_epoch * 1000).toISOString()) : `${g.start_date} ${g.start_time}`);
+const teamLabel = (t) => (t.rank ? `#${t.rank} ` : "") + (t.short || t.full);
+
+async function renderTeamNcaa(box, isCoach) {
+  box.replaceChildren(el("p", { class: "sub" }, "Loading NCAA info..."));
+  let info;
+  try { info = await cached("/api/ncaa/my-team", 10); }
+  catch (e) { return box.replaceChildren(el("h3", {}, "NCAA"), el("p", { class: "sub" }, e.message)); }
+  if (!info.linked) {
+    if (!isCoach) return box.replaceChildren(el("h3", {}, "NCAA"), el("p", { class: "sub" }, "Your coach hasn't linked the team to its NCAA school yet."));
+    return renderLinkForm(box);
+  }
+  const s = info.summary || {};
+  const logo = el("img", { src: info.logo, alt: "", class: "logo", width: 44, height: 44 });
+  logo.addEventListener("error", () => logo.remove());
+  const facts = [s.record ? `Record ${s.record}` : null, s.conference, s.rank ? `#${s.rank} ${s.poll || ""}`.trim() : null].filter(Boolean);
+  const kids = [
+    el("div", { class: "row" }, logo, el("div", {}, el("h3", {}, info.name), el("p", { class: "sub" }, `${info.sport_name} · ${info.division_name}`))),
+    el("p", {}, facts.length ? facts.join(" · ") : el("span", { class: "sub" }, "Not in the current standings or rankings.")),
+  ];
+  const games = info.games || [];
+  kids.push(el("h3", {}, "Upcoming games"));
+  if (info.games_warning) kids.push(el("p", { class: "sub" }, info.games_warning));
+  if (!games.length) kids.push(el("p", { class: "sub" }, info.sport === "football" ? "No game this week." : "No games in the next two weeks."));
+  kids.push(el("ul", { class: "list" }, games.map((g) => {
+    const plan = g.plan && el("button", { type: "button", class: "small", onclick: () => openTripForm(g.plan) }, "Plan trip");
+    return el("li", { class: "game" },
+      el("span", {}, el("strong", {}, `${g.is_away ? "at" : "vs"} ${teamLabel(g.opponent)}`), el("br"),
+        el("span", { class: "sub" }, `${gameWhen(g)}${g.network ? " · " + g.network : ""}${g.state === "final" ? " · " + g.home.score + "-" + g.away.score : ""}`)),
+      plan || (g.url ? el("a", { href: g.url, target: "_blank", rel: "noopener" }, "ncaa.com") : null));
+  })));
+  if (isCoach) kids.push(el("button", { type: "button", class: "link", onclick: () => renderLinkForm(box, info) }, "Change NCAA team"));
+  box.replaceChildren(...kids);
+}
+
+async function renderLinkForm(box, current = {}) {
+  const sports = await cached("/api/ncaa/sports", 1440);
+  const sport = el("select", {}, sports.map((sp) => el("option", { value: sp.slug }, sp.name)));
+  const division = el("select");
+  const fillDivisions = () => {
+    const sp = sports.find((x) => x.slug === sport.value);
+    division.replaceChildren(...sp.divisions.map((d) => el("option", { value: d.slug }, d.name)));
+  };
+  sport.value = current.sport || "football";
+  fillDivisions();
+  if (current.division) division.value = current.division;
+  sport.addEventListener("change", fillDivisions);
+  const search = el("input", { placeholder: "Type your school, e.g. Bowling Green", autocomplete: "off" });
+  const results = el("ul", { class: "list results" });
+  let picked = current.seo ? { slug: current.seo, name: current.name } : null;
+  const pickedLine = el("p", { class: "sub" }, picked ? `Selected: ${picked.name}` : "No school selected yet.");
+  let timer;
+  search.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (search.value.trim().length < 2) return results.replaceChildren();
+      try {
+        const list = await api("/api/ncaa/schools?q=" + encodeURIComponent(search.value.trim()));
+        results.replaceChildren(...list.slice(0, 8).map((sc) => el("li", {}, el("button", { type: "button", class: "list-btn",
+          onclick: () => { picked = sc; pickedLine.textContent = `Selected: ${sc.name} (${sc.long || sc.slug})`; results.replaceChildren(); } },
+          el("strong", {}, sc.name), el("span", { class: "sub" }, sc.long || sc.slug)))));
+      } catch (e) { results.replaceChildren(el("li", { class: "sub" }, e.message)); }
+    }, 250);
+  });
+  const save = el("button", { type: "button" }, "Save NCAA team");
+  save.addEventListener("click", () => busy(save, async () => {
+    if (!picked) throw new Error("Pick your school from the list first.");
+    await api("/api/team", { method: "PATCH", body: { sport: sport.value, division: division.value, ncaa_seo: picked.slug, ncaa_name: picked.name } });
+    try { localStorage.removeItem("cache:/api/ncaa/my-team"); } catch (_) {}
+    flash("Team linked to NCAA.", "ok");
+    renderTeamNcaa(box, true);
+  }));
+  box.replaceChildren(el("h3", {}, "Link your NCAA team"),
+    el("p", { class: "sub" }, "Shows your record, ranking and upcoming games, and lets you plan trips straight from away games."),
+    el("label", {}, "Sport", sport), el("label", {}, "Division", division), el("label", {}, "School", search), results, pickedLine, save);
+}
+
+/* ================= NCAA: explorer ================= */
+let nx = { tab: "rankings", ready: false };
+
+async function openExplorer() {
+  setNav("ncaa");
+  show("ncaa");
+  if (!nx.ready) {
+    nx.sports = await cached("/api/ncaa/sports", 1440);
+    const sportSel = $("#nx-sport"), divSel = $("#nx-division");
+    sportSel.replaceChildren(...nx.sports.map((sp) => el("option", { value: sp.slug }, sp.name)));
+    const fillDiv = () => {
+      const sp = nx.sports.find((x) => x.slug === sportSel.value);
+      divSel.replaceChildren(...sp.divisions.map((d) => el("option", { value: d.slug }, d.name)));
+    };
+    const team = state.me.team || {};
+    sportSel.value = team.sport || "football";
+    fillDiv();
+    if (team.division) divSel.value = team.division;
+    $("#nx-date").value = new Date().toISOString().slice(0, 10);
+    sportSel.addEventListener("change", () => { fillDiv(); loadExplorer(); });
+    divSel.addEventListener("change", loadExplorer);
+    $("#nx-date").addEventListener("change", () => { if (nx.tab === "scores") loadExplorer(); });
+    let t;
+    $("#nx-school").addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => setTab("schools"), 300); });
+    document.querySelectorAll("#nx-tabs .tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+    nx.ready = true;
+  }
+  loadExplorer();
+}
+
+function setTab(tab) {
+  nx.tab = tab;
+  document.querySelectorAll("#nx-tabs .tab").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === tab));
+  loadExplorer();
+}
+
+function dataTable(rows) {
+  if (!rows || !rows.length) return el("p", { class: "sub" }, "Nothing published for this yet.");
+  const cols = Object.keys(rows[0]);
+  return el("div", { class: "scroll" }, el("table", {},
+    el("thead", {}, el("tr", {}, cols.map((c) => el("th", {}, c)))),
+    el("tbody", {}, rows.map((r) => el("tr", {}, cols.map((c) => el("td", {}, r[c] ?? "")))))));
+}
+
+async function loadExplorer() {
+  const body = $("#nx-body");
+  const sport = $("#nx-sport").value, div = $("#nx-division").value;
+  const sp = nx.sports.find((x) => x.slug === sport);
+  body.replaceChildren(el("p", { class: "sub" }, "Loading..."));
+  try {
+    if (nx.tab === "rankings") {
+      const r = await cached(`/api/ncaa/rankings/${sport}/${div}`, 60);
+      body.replaceChildren(el("h2", {}, r.title || "Rankings"), el("p", { class: "sub" }, r.updated || ""), dataTable(r.data));
+    } else if (nx.tab === "standings") {
+      const r = await cached(`/api/ncaa/standings/${sport}/${div}`, 60);
+      body.replaceChildren(el("p", { class: "sub" }, r.updated || ""), ...(r.data || []).map((c) =>
+        el("div", { class: "card" }, el("h3", {}, c.conference), dataTable(c.standings))));
+      if (!(r.data || []).length) body.append(el("p", { class: "sub" }, "No standings published."));
+    } else if (nx.tab === "scores") {
+      if (sp.scoreboard === false) return body.replaceChildren(el("p", { class: "sub" }, `NCAA doesn't publish scoreboards for ${sp.name}. Try Rankings.`));
+      const q = sp.weekly ? "" : "?date=" + $("#nx-date").value;
+      const games = await cached(`/api/ncaa/scoreboard/${sport}/${div}${q}`, 5);
+      body.replaceChildren(el("p", { class: "sub" }, sp.weekly ? "This week's games" : `${games.length} games`),
+        games.length ? el("ul", { class: "list" }, games.map((g) => el("li", { class: "game" },
+          el("span", {}, `${teamLabel(g.away)} ${g.away.score} at ${teamLabel(g.home)} ${g.home.score}`, el("br"),
+            el("span", { class: "sub" }, `${g.state === "final" ? g.final_message || "Final" : gameWhen(g)}${g.network ? " · " + g.network : ""}`)),
+          g.url ? el("a", { href: g.url, target: "_blank", rel: "noopener" }, "details") : null))) : el("p", { class: "sub" }, "No games that day."));
+    } else {
+      const q = $("#nx-school").value.trim();
+      if (q.length < 2) return body.replaceChildren(el("p", { class: "sub" }, "Type at least 2 letters in \"Find a school\"."));
+      const list = await api("/api/ncaa/schools?q=" + encodeURIComponent(q));
+      body.replaceChildren(el("ul", { class: "list" }, list.map((sc) => {
+        const img = el("img", { src: `${CFG.ncaaBase}/logo/${sc.slug}.svg`, alt: "", class: "logo", width: 28, height: 28, loading: "lazy" });
+        img.addEventListener("error", () => img.remove());
+        return el("li", { class: "row" }, img, el("strong", {}, sc.name), el("span", { class: "sub" }, sc.long || ""));
+      })));
+    }
+  } catch (e) {
+    body.replaceChildren(el("p", { class: "card sub" }, e.message));
+  }
+}
+
+/* ================= Chat assistant ================= */
+let chat = [];
+const chatKey = () => "chat:" + ((state.me && state.me.user.id) || "anon");
+
+function loadChat() {
+  try { chat = JSON.parse(localStorage.getItem(chatKey()) || "[]"); } catch (_) { chat = []; }
+  renderChat();
+}
+function saveChat() {
+  try { localStorage.setItem(chatKey(), JSON.stringify(chat.slice(-40))); } catch (_) {}
+}
+function renderChat() {
+  const log = $("#chat-log");
+  if (!chat.length) {
+    const tips = state.me && state.me.profile && state.me.profile.role === "coach"
+      ? ["Compare the packages", "Why that recommendation?", "Book package 2", "What's our record?"]
+      : ["When does the bus leave?", "What can I eat?", "Where am I staying?", "I'm going"];
+    return log.replaceChildren(el("p", { class: "sub" }, "Try:"), el("div", { class: "chips" },
+      tips.map((t) => el("button", { type: "button", class: "chip", onclick: () => sendChat(t) }, t))));
+  }
+  log.replaceChildren(...chat.map((m) => el("div", { class: "msg " + m.role }, el("p", { class: "pre" }, m.content))));
+  log.scrollTop = log.scrollHeight;
+}
+function openChat() { $("#chat-panel").hidden = false; $("#chat-toggle").setAttribute("aria-expanded", "true"); $("#chat-input").focus(); }
+function closeChat() { $("#chat-panel").hidden = true; $("#chat-toggle").setAttribute("aria-expanded", "false"); }
+$("#chat-toggle").addEventListener("click", () => ($("#chat-panel").hidden ? openChat() : closeChat()));
+$("#chat-close").addEventListener("click", closeChat);
+$("#chat-clear").addEventListener("click", () => { chat = []; saveChat(); renderChat(); });
+$("#chat-form").addEventListener("submit", (e) => { e.preventDefault(); const t = $("#chat-input").value.trim(); if (t) sendChat(t); });
+
+async function sendChat(text) {
+  $("#chat-input").value = "";
+  chat.push({ role: "user", content: text });
+  renderChat();
+  const typing = el("div", { class: "msg assistant sub" }, "...");
+  $("#chat-log").append(typing);
+  try {
+    const r = await api("/api/chat", { method: "POST", body: { messages: chat.slice(-12), trip_id: state.current && state.current.id } });
+    chat.push({ role: "assistant", content: r.reply || "(no answer)" });
+    if (r.action && r.action.ok) {
+      if (r.action.type === "request_booking") { await openTrip(r.action.trip_id); state.trips = await api("/api/trips"); renderTripList(); }
+      if (r.action.type === "rsvp") playerHome();
+    }
+  } catch (e) {
+    chat.push({ role: "assistant", content: "Sorry, something went wrong: " + e.message });
+  }
+  saveChat();
+  renderChat();
 }
 
 /* ---------- start ---------- */
