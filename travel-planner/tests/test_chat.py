@@ -24,8 +24,9 @@ def env(monkeypatch):
 def connect(monkeypatch, planner, reply):
     """Pretend Aivana is connected; `reply` is a function of the messages sent to it."""
     monkeypatch.setattr(planner.aivana, "api_key", "k")
-    sent = []
-    monkeypatch.setattr(planner.aivana, "complete", lambda msgs: (sent.append(msgs), reply(msgs))[1])
+    sent, sent_kw = [], []
+    connect.kw = sent_kw
+    monkeypatch.setattr(planner.aivana, "complete", lambda msgs, **kw: (sent.append(msgs), sent_kw.append(kw), reply(msgs))[2])
     return sent
 
 
@@ -136,6 +137,9 @@ def test_client_uses_the_official_sdk_shape():
     assert out == "Hello from Aivana" and FakeSDK.api_key == "ai_live_test"
     sent = FakeSDK.calls[-1]
     assert len(sent["system"]) == 8000 and [m["role"] for m in sent["messages"]] == ["user", "assistant", "user"]
+    assert "web_search" not in sent
+    client.complete([{"role": "user", "content": "weather?"}], web_search=True)
+    assert FakeSDK.calls[-1]["web_search"] is True
 
 
 def test_chat_context_goes_with_the_question_not_the_system_prompt(env, monkeypatch):
@@ -144,3 +148,19 @@ def test_chat_context_goes_with_the_question_not_the_system_prompt(env, monkeypa
     say(c, C, "compare packages")
     system, last = sent[-1][0]["content"], sent[-1][-1]["content"]
     assert len(system) < 8000 and "Context (JSON" in last and last.endswith("Question: compare packages")
+
+
+def test_chat_sends_the_whole_area_and_turns_on_web_search(env, monkeypatch):
+    c, db, planner = env
+    sent = connect(monkeypatch, planner, lambda msgs: json.dumps({"reply": "ok", "action": None}))
+    say(c, C, "which hotel is closest to the stadium?")
+    ctx = json.loads(sent[-1][-1]["content"].split("\n", 1)[1].rsplit("\n\nQuestion:", 1)[0])
+    trip = ctx["trips"][0]
+    hotels = trip["area"]["hotels_near_venue_by_distance"]
+    assert len(trip["priced_packages"]) == len(planner.packages(trip["trip_id"]))      # all packages, not a top 5
+    assert hotels[0]["km_to_venue"] <= min(p["hotel_km"] for p in trip["priced_packages"] if p["hotel_km"] is not None)
+    assert connect.kw[-1] == {"web_search": True}
+    # players get the same area, without prices
+    sent = connect(monkeypatch, planner, lambda msgs: json.dumps({"reply": "ok", "action": None}))
+    say(c, P, "closest hotel?")
+    assert "price" not in sent[-1][-1]["content"] and "hotels_near_venue_by_distance" in sent[-1][-1]["content"]

@@ -38,18 +38,46 @@ class ChatAssistant:
                                          for g in self.ncaa.team_games(team["sport"], team["division"], team["ncaa_seo"])[:5]]}
             except NCAAError as exc:
                 ctx["ncaa"] = {"error": str(exc)}
+        coach = profile["role"] == "coach"
         for t in trips:
-            if profile["role"] == "coach":
-                item = {"trip_id": t["id"], "opponent": t["opponent"], "venue": t["venue_name"], "match_at": t["match_at"],
-                        "status": t["status"], "budget": t["budget"], "travelers": t["num_players"] + t["num_coaches"] + t["num_staff"],
-                        "ai_pick": t.get("ai_recommendation"), "selected_package": t.get("selected_package_no"),
-                        "packages": [_pkg_brief(p) for p in self.planner.packages(t["id"])[:5]]}
+            if coach:
+                item = {"trip_id": t["id"], "opponent": t["opponent"], "venue": t["venue_name"], "venue_address": t.get("venue_address"),
+                        "match_at": t["match_at"], "status": t["status"], "published_to_players": t.get("published"),
+                        "budget": t["budget"], "nights": t["nights"], "team_meals": t["meals"],
+                        "travelers": {"players": t["num_players"], "coaches": t["num_coaches"], "staff": t["num_staff"]},
+                        "diet_needs": t.get("diet_tags") or [],
+                        "recommendation": t.get("ai_recommendation"), "selected_package": t.get("selected_package_no"),
+                        "priced_packages": [_pkg_brief(p) for p in self.planner.packages(t["id"])]}
             else:
                 item = self.planner.player_view(t, profile)
                 item = {k: v for k, v in item.items() if k not in ("venue_lat", "venue_lng")}
                 item["trip_id"] = item.pop("id")
+            item["area"] = self._area(t, coach)
             ctx["trips"].append(item)
+        ctx["announcements"] = [{"title": a["title"], "body": (a.get("body") or "")[:600], "posted": a.get("created_at")}
+                                for a in self.db.select("announcements", {"team_id": team["id"]}, order="created_at.desc", limit=5)]
         return ctx
+
+    def _area(self, trip, coach):
+        """Every hotel and restaurant the planner knows near the venue (not just the priced packages),
+        so "closest hotel" or "is there a halal place" questions are answered from real data."""
+        data, lat, lng = self.planner.data, float(trip["venue_lat"]), float(trip["venue_lng"])
+        diets = trip.get("diet_tags") or []
+        hotels = []
+        for h in data.hotels_near(lat, lng)[:12]:
+            row = {k: h.get(k) for k in ("name", "address", "km_to_venue", "drive_min_to_venue", "stars", "rating", "amenities")}
+            if coach:
+                row.update({"price_per_night": h.get("price_per_night"), "price_is_estimate": bool(h.get("price_estimated")),
+                            "rooms_available": h.get("rooms_available")})
+            hotels.append({k: v for k, v in row.items() if v not in (None, "", [])})
+        rests = []
+        for r in data.restaurants_near(lat, lng)[:12]:
+            row = {"name": r["name"], "cuisine": r.get("cuisine"), "km_to_venue": r.get("km_to_venue"),
+                   "halal_certified": r.get("halal_certified"), "no_main_dish_for": data.missing_diets(r["id"], diets)}
+            if coach:
+                row.update({"price_per_person": r.get("price_per_person"), "group_capacity": r.get("group_capacity")})
+            rests.append(row)
+        return {"hotels_near_venue_by_distance": hotels, "restaurants_near_venue_by_distance": rests}
 
     # -- entry point -----------------------------------------------------------
     def handle(self, profile, team, messages, focus_trip_id=None):
@@ -75,8 +103,14 @@ class ChatAssistant:
     def _ask_ai(self, profile, ctx, messages):
         role = profile["role"]
         system = (
-            "You are answering questions inside a college sports team's away-game travel planner. Be brief and friendly. "
-            "Answer only from the JSON context; if something isn't there, say so. Never invent prices, times or hotels. "
+            "You answer questions inside a college sports team's away-game travel planner. Be brief and friendly. "
+            "You have two sources. (1) TEAM DATA: the JSON context sent with the question. It is the only source for "
+            "this team's trips, packages, prices, bookings, rooms, bus times, roster and announcements; never contradict "
+            "it or add details to it. priced_packages are the hotel+restaurant combinations the planner priced; "
+            "area lists every hotel and restaurant the planner knows near the venue, sorted by distance. "
+            "(2) WEB SEARCH: use it for general facts that are not in the team data (weather, other teams and coaches, "
+            "rankings news, local places, travel rules). Start that part with 'From the web:'. "
+            "If neither source has the answer, say you don't know. Never guess numbers, times, names or prices. "
             + ("Never mention money, prices or budget. " if role == "player" else "")
             + "You cannot approve or pay for bookings: the team's main planner approves on the trip page. "
             + ("Only the main planner may prepare bookings; you_are_main_planner tells you if this user is. " if role == "coach" else "")
@@ -88,7 +122,7 @@ class ChatAssistant:
         convo = [dict(m) for m in messages]
         convo[-1]["content"] = ("Context (JSON, the app's current data):\n" + json.dumps(ctx, default=str)
                                 + "\n\nQuestion: " + convo[-1]["content"])
-        raw = self.aivana.complete([{"role": "system", "content": system}] + convo)
+        raw = self.aivana.complete([{"role": "system", "content": system}] + convo, web_search=self.aivana.web_search)
         try:
             parsed = json.loads(_strip_fences(raw))
             return str(parsed.get("reply") or "").strip(), parsed.get("action")
@@ -134,10 +168,14 @@ class ChatAssistant:
 
 def _pkg_brief(p):
     d = p["detail"]
+    h, r, b = d.get("hotel") or {}, d.get("restaurant") or {}, d.get("bus") or {}
     return {"package_no": p["package_no"], "total_cost": float(p["total_cost"]), "within_budget": d["within_budget"],
-            "hotel": (d.get("hotel") or {}).get("name"), "hotel_km": (d.get("hotel") or {}).get("km_to_venue"),
-            "restaurant": (d.get("restaurant") or {}).get("name"),
-            "missing_diets": (d.get("restaurant") or {}).get("missing_diets"), "departure": d.get("suggested_departure")}
+            "costs": d.get("costs"), "rooms": d.get("rooms"),
+            "hotel": h.get("name"), "hotel_km": h.get("km_to_venue"), "hotel_stars": h.get("stars"), "hotel_rating": h.get("rating"),
+            "hotel_price_is_estimate": bool(h.get("price_estimated")),
+            "restaurant": r.get("name"), "cuisine": r.get("cuisine"), "missing_diets": r.get("missing_diets"),
+            "bus": f"{b.get('count')} x {b.get('company')} {b.get('vehicle')}", "departure": d.get("suggested_departure"),
+            "arrive_by": d.get("arrive_by"), "late_arrival": d.get("late_arrival")}
 
 
 def _strip_fences(raw):

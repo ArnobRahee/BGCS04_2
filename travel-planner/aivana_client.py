@@ -5,6 +5,7 @@ Configure with environment variables (never in code):
   AIVANA_API_KEY    your key, "ai_live_..." (required)
   AIVANA_API_BASE   optional: only to point the SDK at a different Aivana deployment
   AIVANA_EFFORT     optional: auto (default) | low | medium | high
+  AIVANA_WEB_SEARCH optional: on (default) lets the chat panel search the web for general facts
 Aivana is the only AI in the app. When it isn't connected (or a call fails) nothing pretends to be AI:
   - recommend(): a plain best-value ranking (budget, diet coverage, distance, cost), labelled as such
   - draft_announcement(): a fill-in-the-blanks template from the booked package
@@ -22,6 +23,8 @@ class AivanaClient:
         self.api_key = os.environ.get("AIVANA_API_KEY", "").strip()
         self.api_base = (os.environ.get("AIVANA_API_BASE") or os.environ.get("AIVANA_API_URL") or "").strip()
         self.effort = os.environ.get("AIVANA_EFFORT", "").strip().lower()
+        # Aivana's own web search, used by the chat panel for facts outside the team's data.
+        self.web_search = os.environ.get("AIVANA_WEB_SEARCH", "on").strip().lower() not in ("0", "off", "false", "no")
         self._sdk = sdk
 
     @property
@@ -40,7 +43,7 @@ class AivanaClient:
             sdk.set_api_base(self.api_base)
         return sdk
 
-    def complete(self, messages: list[dict]) -> str:
+    def complete(self, messages: list[dict], web_search: bool = False) -> str:
         """Send a conversation ([{role, content}], roles system/user/assistant) and return Aivana's answer."""
         sdk = self._client()
         system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system").strip()
@@ -48,6 +51,8 @@ class AivanaClient:
         options = {"messages": turns}
         if system:
             options["system"] = system[:SYSTEM_LIMIT]
+        if web_search:
+            options["web_search"] = True
         if self.effort in ("low", "medium", "high"):
             options["effort"] = self.effort
         try:
