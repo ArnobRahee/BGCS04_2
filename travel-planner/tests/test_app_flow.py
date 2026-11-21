@@ -5,11 +5,12 @@ import app as appmod
 
 # Columns that exist in Supabase (from the migrations). If code writes anything else, Supabase rejects it.
 SCHEMA = {
-    "teams": {"id", "name", "join_code", "home_name", "home_lat", "home_lng", "owner_id", "created_at"},
+    "teams": {"id", "name", "join_code", "home_name", "home_lat", "home_lng", "owner_id", "created_at",
+              "ncaa_seo", "ncaa_name", "sport", "division"},
     "profiles": {"id", "full_name", "role", "team_id", "diet_tags", "created_at"},
     "trips": {"id", "team_id", "created_by", "opponent", "venue_name", "venue_address", "venue_lat", "venue_lng",
               "match_at", "depart_after", "nights", "budget", "num_players", "num_coaches", "num_staff", "diet_tags",
-              "meals", "status", "selected_package_no", "published", "ai_recommendation", "created_at"},
+              "meals", "status", "selected_package_no", "published", "ai_recommendation", "created_at", "ncaa_game_id"},
     "trip_packages": {"id", "trip_id", "package_no", "total_cost", "route_km", "detail"},
     "bookings": {"id", "trip_id", "type", "quantity", "check_in", "check_out", "amount", "status", "confirmation_code",
                  "summary", "requested_by", "approved_by", "created_at"},
@@ -17,6 +18,7 @@ SCHEMA = {
     "announcements": {"id", "trip_id", "team_id", "author_id", "title", "body", "created_at"},
     "announcement_reads": {"announcement_id", "user_id"},
     "saved_items": {"id", "user_id", "announcement_id", "trip_id", "created_at"},
+    "ncaa_cache": {"key", "payload", "fetched_at"},
 }
 CHECKS = {("trips", "status"): {"DRAFT", "PLANNING", "AWAITING_APPROVAL", "BOOKED", "IN_PROGRESS", "COMPLETED", "CANCELLED"},
           ("bookings", "status"): {"PENDING_APPROVAL", "CONFIRMED", "FAILED", "CANCELLED"},

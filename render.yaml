@@ -21,3 +21,9 @@ services:
         sync: false
       - key: AIVANA_API_URL
         sync: false
+      - key: AIVANA_API_STYLE
+        value: openai
+      - key: AIVANA_MODEL
+        sync: false
+      - key: NCAA_API_URL
+        value: https://ncaa-api.henrygd.me

@@ -110,7 +110,7 @@ class SupabaseDB:
 
 class MemoryDB:
     """In-memory stand-in with the same methods. Not shared between processes."""
-    NO_ID = {"trip_participants", "announcement_reads"}                     # composite primary keys
+    NO_ID = {"trip_participants", "announcement_reads", "ncaa_cache"}       # composite / natural primary keys
     NO_CREATED_AT = NO_ID | {"trip_packages"}                               # tables without created_at
 
     def __init__(self, seed: dict | None = None):

@@ -13,7 +13,8 @@ PLAYERS = [("Aiden Carter", []), ("Omar Haddad", ["halal"]), ("Priya Nair", ["ve
 
 def seed_demo(db, planner):
     team = db.insert("teams", {"name": "BGSU Falcons", "join_code": "FALCON-2026", **HOME,
-                               "owner_id": "demo-coach-id"})[0]
+                               "owner_id": "demo-coach-id", "ncaa_seo": "bowling-green",
+                               "ncaa_name": "Bowling Green", "sport": "football", "division": "fbs"})[0]
     coach = db.insert("profiles", {"id": "demo-coach-id", "full_name": "Coach Morgan", "role": "coach",
                                    "team_id": team["id"], "diet_tags": []})[0]
     players = db.insert("profiles", [{"id": f"demo-player-{i}", "full_name": n, "role": "player",

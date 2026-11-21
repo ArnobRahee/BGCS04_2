@@ -6,6 +6,7 @@ two one-click demo accounts (coach and player), so anyone can try it with no set
 """
 import os
 import secrets
+from datetime import date
 
 from dotenv import load_dotenv
 
@@ -15,17 +16,21 @@ from flask import Flask, g, jsonify, render_template, request  # noqa: E402
 
 import db as dbmod  # noqa: E402
 from auth import login_required  # noqa: E402
+from chat_assistant import ChatAssistant  # noqa: E402
 from demo import seed_demo  # noqa: E402
+from ncaa_client import BASE_URL as NCAA_BASE, DIVISION_NAMES, SPORTS, NCAAClient, NCAAError, game_start_local  # noqa: E402
 from travel_planner import PlanError, TravelPlanner  # noqa: E402
 
 DIET_TAGS = ["vegetarian", "vegan", "halal", "gluten_free", "nut_free"]
 
 app = Flask(__name__)
+app.json.sort_keys = False          # keep NCAA table columns in the order ncaa.com shows them
 DB = dbmod.from_env()
 DEMO = DB is None
 if DEMO:
     DB = dbmod.MemoryDB()
 planner = TravelPlanner(DB)
+ncaa = NCAAClient(None if DEMO else DB)          # Supabase also stores the NCAA cache
 if DEMO:
     seed_demo(DB, planner)
 
@@ -42,6 +47,11 @@ member = login_required(get_db)
 @app.errorhandler(PlanError)
 def plan_error(exc):
     return jsonify({"error": str(exc)}), 400
+
+
+@app.errorhandler(NCAAError)
+def ncaa_error(exc):
+    return jsonify({"error": str(exc)}), 502
 
 
 @app.errorhandler(dbmod.DBError)
@@ -62,7 +72,7 @@ def my_trip(trip_id):
 def index():
     config = {"supabaseUrl": os.environ.get("SUPABASE_URL", ""),
               "supabaseKey": os.environ.get("SUPABASE_PUBLISHABLE_KEY", ""),
-              "demo": DEMO, "dietTags": DIET_TAGS}
+              "demo": DEMO, "dietTags": DIET_TAGS, "ncaaBase": NCAA_BASE}
     return render_template("index.html", config=config)
 
 
@@ -78,8 +88,11 @@ def health():
 def me():
     team = planner.team(g.profile["team_id"]) if g.profile and g.profile.get("team_id") else None
     if team and g.profile["role"] != "coach":
-        team = {k: team[k] for k in ("id", "name", "home_name")}
-    return jsonify({"user": {"id": g.user["id"], "email": g.user.get("email")}, "profile": g.profile, "team": team})
+        team = {k: team.get(k) for k in ("id", "name", "home_name", "ncaa_seo", "ncaa_name", "sport", "division")}
+    meta = g.user.get("user_metadata") or {}
+    user = {"id": g.user["id"], "email": g.user.get("email"), "name": meta.get("full_name") or meta.get("name") or "",
+            "provider": (g.user.get("app_metadata") or {}).get("provider", "email")}
+    return jsonify({"user": user, "profile": g.profile, "team": team})
 
 
 @app.post("/api/onboard")
@@ -309,6 +322,122 @@ def toggle_save(aid):
         return jsonify({"saved": False})
     DB.insert("saved_items", key)
     return jsonify({"saved": True})
+
+
+# -- NCAA ------------------------------------------------------------------
+@app.get("/api/ncaa/sports")
+@member
+def ncaa_sports():
+    return jsonify([{"slug": k, "name": v["name"], "weekly": bool(v.get("weekly")), "scoreboard": v.get("scoreboard", True),
+                     "divisions": [{"slug": d, "name": DIVISION_NAMES.get(d, d.upper())} for d in v["divisions"]]}
+                    for k, v in SPORTS.items()])
+
+
+@app.get("/api/ncaa/schools")
+@member
+def ncaa_schools():
+    return jsonify(ncaa.search_schools(request.args.get("q", ""), limit=25))
+
+
+@app.get("/api/ncaa/rankings/<sport>/<division>")
+@member
+def ncaa_rankings(sport, division):
+    poll = request.args.get("poll") or None
+    if poll and not all(c.isalnum() or c == "-" for c in poll):
+        raise PlanError("Invalid poll name.")
+    return jsonify(ncaa.rankings(sport, division, poll))
+
+
+@app.get("/api/ncaa/standings/<sport>/<division>")
+@member
+def ncaa_standings(sport, division):
+    return jsonify(ncaa.standings(sport, division))
+
+
+@app.get("/api/ncaa/scoreboard/<sport>/<division>")
+@member
+def ncaa_scoreboard(sport, division):
+    day = request.args.get("date")
+    try:
+        day = date.fromisoformat(day) if day else None
+        week = int(request.args["week"]) if request.args.get("week") else None
+        season = int(request.args["season"]) if request.args.get("season") else None
+    except ValueError:
+        raise PlanError("Use date=YYYY-MM-DD, or week and season numbers.")
+    if week and not season:
+        season = date.today().year if date.today().month >= 8 else date.today().year - 1
+    return jsonify(ncaa.scoreboard(sport, division, day, week, season))
+
+
+@app.get("/api/ncaa/brackets/<sport>/<division>/<int:year>")
+@member
+def ncaa_brackets(sport, division, year):
+    return jsonify(ncaa.brackets(sport, division, year))
+
+
+@app.get("/api/ncaa/my-team")
+@member
+def ncaa_my_team():
+    team = planner.team(g.profile["team_id"])
+    if not (team.get("ncaa_seo") and team.get("sport") and team.get("division")):
+        return jsonify({"linked": False})
+    out = {"linked": True, "seo": team["ncaa_seo"], "name": team.get("ncaa_name"), "sport": team["sport"],
+           "sport_name": SPORTS.get(team["sport"], {}).get("name"), "division": team["division"],
+           "division_name": DIVISION_NAMES.get(team["division"], team["division"]),
+           "logo": f"{NCAA_BASE}/logo/{team['ncaa_seo']}.svg"}
+    out["summary"] = ncaa.team_summary(team["sport"], team["division"], team.get("ncaa_name") or "")
+    games, warning = [], None
+    if SPORTS.get(team["sport"], {}).get("scoreboard", True):
+        try:
+            games = ncaa.team_games(team["sport"], team["division"], team["ncaa_seo"])
+        except NCAAError as exc:
+            warning = str(exc)
+    venues_by_school = {v.get("school_seo"): v for v in planner.data.venues.values() if v.get("school_seo")}
+    for gm in games:
+        if gm["is_away"] and g.profile["role"] == "coach":
+            v = venues_by_school.get(gm["home"]["seo"])
+            gm["plan"] = {"opponent": gm["home"]["short"], "match_at": game_start_local(gm), "ncaa_game_id": gm["id"],
+                          "venue_id": v["id"] if v else None,
+                          "venue_name": None if v else f"{gm['home']['full'] or gm['home']['short']} home venue"}
+    out["games"], out["games_warning"] = games, warning
+    return jsonify(out)
+
+
+@app.patch("/api/team")
+@coach_only
+def link_team():
+    b = body()
+    sport, division = b.get("sport"), b.get("division")
+    seo = str(b.get("ncaa_seo") or "").strip().lower()
+    try:
+        NCAAClient.check(sport or "", division or "")
+    except NCAAError as exc:
+        raise PlanError(str(exc))
+    if not seo:
+        raise PlanError("Pick your school from the list.")
+    name = str(b.get("ncaa_name") or "").strip()
+    try:                                    # confirm the school exists when NCAA data is reachable
+        match = next((s for s in ncaa.schools() if s.get("slug") == seo), None)
+        if match is None:
+            raise PlanError("That school isn't in the NCAA list.")
+        name = match.get("name") or name
+    except NCAAError:
+        pass
+    team = DB.update("teams", {"ncaa_seo": seo, "ncaa_name": name or seo, "sport": sport, "division": division},
+                     {"id": g.profile["team_id"]})[0]
+    return jsonify(team)
+
+
+# -- chatbot ----------------------------------------------------------------
+@app.post("/api/chat")
+@member
+def chat():
+    b = body()
+    messages = b.get("messages") if isinstance(b.get("messages"), list) else []
+    messages = [{"role": m.get("role"), "content": str(m.get("content") or "")[:2000]} for m in messages if isinstance(m, dict)]
+    team = planner.team(g.profile["team_id"])
+    assistant = ChatAssistant(DB, planner, ncaa, planner.aivana)
+    return jsonify(assistant.handle(g.profile, team, messages, focus_trip_id=b.get("trip_id")))
 
 
 if __name__ == "__main__":

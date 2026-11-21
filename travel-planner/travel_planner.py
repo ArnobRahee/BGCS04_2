@@ -74,6 +74,7 @@ class TravelPlanner:
                 "meals": int(form.get("meals", 1)),
                 "diet_tags": diet,
                 "status": "PLANNING", "published": False, "selected_package_no": None,
+                "ncaa_game_id": str(form["ncaa_game_id"]) if form.get("ncaa_game_id") else None,
             }
         except KeyError as exc:
             raise PlanError(f"Missing trip detail: {exc.args[0]}.") from exc
