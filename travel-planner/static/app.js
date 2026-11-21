@@ -25,8 +25,38 @@ const addMin = (s, m) => new Date(toDate(s).getTime() + (m || 0) * 60000);
 const daysUntil = (s) => Math.max(0, Math.ceil((toDate(s) - Date.now()) / 86400000));
 const initials = (name) => String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
 const cityOf = (address) => { const p = String(address || "").split(",").map((x) => x.trim()).filter(Boolean); return p.length >= 3 ? p[p.length - 2] : p.length === 2 ? p[1].replace(/\s*\d.*$/, "") : ""; };
-const mapLink = (lat, lng) => `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=15/${lat}/${lng}`;
+const gmapsLink = (lat, lng) => `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
 const stars = (n) => "★".repeat(n || 0);
+const plannerOnlyNote = () => `Only the main planner${state.me && state.me.main_planner ? ", " + state.me.main_planner.name + "," : ""} can book hotels, buses and restaurants.`;
+
+/* Hotel rating: Google rating for real hotels, star class for catalog hotels. */
+function hotelRating(h) {
+  if (h.rating) return el("small", { class: "g-rating", title: "Google rating" }, `★ ${Number(h.rating).toFixed(1)}`, h.user_rating_count ? ` (${Number(h.user_rating_count).toLocaleString()})` : "");
+  return h.stars ? el("small", { "aria-label": `${h.stars} star` }, stars(h.stars)) : null;
+}
+/* Google photo of the hotel, with the photographer credit Google requires. */
+function hotelPhoto(h, cls = "") {
+  const author = h.photo_author || (h.photo && h.photo.author) || "";
+  const authorUri = h.photo_author_uri || (h.photo && h.photo.author_uri) || "";
+  const img = el("img", { src: h.photo_url, alt: h.name, loading: "lazy" });
+  const box = el("figure", { class: ("hotel-photo " + cls).trim() }, img,
+    el("figcaption", {}, author ? ["Photo: ", authorUri ? el("a", { href: authorUri, target: "_blank", rel: "noopener", onclick: (e) => e.stopPropagation() }, author) : author, " · "] : null, "Google Maps"));
+  img.addEventListener("error", () => box.replaceWith(el("div", { class: "hotel-art art-1" }, el("span", {}, "Photo unavailable"))));
+  return box;
+}
+let gmapsPromise = null;
+function loadGoogleMaps() {
+  if (window.google && window.google.maps && window.google.maps.importLibrary) return Promise.resolve(window.google.maps);
+  if (!gmapsPromise) gmapsPromise = new Promise((resolve, reject) => {
+    window.__gmapsReady = () => resolve(window.google.maps);
+    const sc = document.createElement("script");
+    sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(CFG.mapsKey)}&loading=async&callback=__gmapsReady`;
+    sc.async = true;
+    sc.onerror = () => { gmapsPromise = null; reject(new Error("Google Maps failed to load")); };
+    document.head.append(sc);
+  });
+  return gmapsPromise;
+}
 const statusText = (s) => ({ PLANNING: "Planning", AWAITING_APPROVAL: "Needs approval", BOOKED: "Booked", CANCELLED: "Cancelled", COMPLETED: "Completed", IN_PROGRESS: "On the road", DRAFT: "Draft" }[s] || s);
 const isCoach = () => state.role === "coach";
 const teamName = () => (state.me && state.me.team && state.me.team.name) || "Our team";
@@ -166,18 +196,53 @@ function setupAuth() {
     $("#auth-submit").textContent = mode === "signin" ? "Sign in" : "Create account";
     $("#auth-title").textContent = mode === "signin" ? "Welcome back" : "Create your account";
   }));
+  const redirectTo = window.location.origin + window.location.pathname;
+  let pendingEmail = "";
+  const showInbox = (email) => {
+    pendingEmail = email;
+    $("#inbox-email").textContent = email;
+    $("#real-auth").hidden = true;
+    $("#check-inbox").hidden = false;
+    $("#auth-title").textContent = "Confirm your email";
+  };
+  $("#inbox-back").addEventListener("click", () => {
+    $("#check-inbox").hidden = true;
+    $("#real-auth").hidden = false;
+    $("#auth-title").textContent = "Welcome back";
+  });
+  $("#inbox-resend").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    const { error } = await sb.auth.resend({ type: "signup", email: pendingEmail, options: { emailRedirectTo: redirectTo } });
+    if (error) throw error;
+    flash("Sent. Check your inbox.", "ok");
+  }));
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const { email, password } = Object.fromEntries(new FormData(form));
     busy($("#auth-submit"), async () => {
-      const fn = mode === "signin" ? sb.auth.signInWithPassword : sb.auth.signUp;
-      const { data, error } = await fn.call(sb.auth, { email, password });
-      if (error) throw error;
-      if (!data.session) { flash("Check your email to confirm your account, then sign in.", "info"); return; }
+      if (mode === "signup") {
+        const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } });
+        if (error) throw error;
+        if (!data.session) return showInbox(email);        // "Confirm email" is on in Supabase
+      } else {
+        const { error } = await sb.auth.signInWithPassword({ email, password });
+        if (error && /not confirmed/i.test(error.message)) return showInbox(email);
+        if (error) throw error;
+      }
       flash("");
       boot();
     });
   });
+}
+
+/* Returning from the confirmation email (or Google): Supabase puts the session or an error in the
+   URL hash. supabase-js reads it; we then tidy the URL so the page router takes over. */
+function authReturn() {
+  const h = location.hash;
+  if (!/access_token=|error_description=/.test(h)) return;
+  const params = new URLSearchParams(h.replace(/^#/, ""));
+  if (params.get("error_description")) flash(params.get("error_description").replace(/\+/g, " ") + ". Try signing in, or resend the email.", "error");
+  else if (params.get("type") === "signup") flash("Email confirmed. Welcome!", "ok");
+  history.replaceState(null, "", location.pathname + "#/home");
 }
 
 function useDemo(tok) {
@@ -229,6 +294,7 @@ function setupOnboard() {
 /* ================= boot + shell ================= */
 async function boot() {
   const t = await token();
+  authReturn();
   if (!t) return showView("auth");
   try {
     state.me = await api("/api/me");
@@ -550,10 +616,13 @@ function planningView(t) {
   const art = (p) => "art-" + ((hotelOrder.indexOf(p.detail.hotel && p.detail.hotel.id) % 4) + 1);
   const amenities = [...new Set(pkgs.flatMap((p) => (p.detail.hotel && p.detail.hotel.amenities) || []))].sort();
   const isPick = (p) => rec && rec.package_no === p.package_no;
-  const tagOf = (p) => (isPick(p) ? "Aivana's pick" : p.total_cost === minCost ? "Lowest cost" : p.detail.hotel && p.detail.hotel.km_to_venue === minKm ? "Closest" : p.detail.hotel ? `${p.detail.hotel.stars || 0}-star hotel` : "Day trip");
+  const fromAivana = !!rec && rec.source === "aivana";
+  const tagOf = (p) => (isPick(p) ? (fromAivana ? "Aivana's pick" : "Best value") : p.total_cost === minCost ? "Lowest cost" : p.detail.hotel && p.detail.hotel.km_to_venue === minKm ? "Closest" : p.detail.hotel ? (p.detail.hotel.rating ? `★ ${Number(p.detail.hotel.rating).toFixed(1)} on Google` : p.detail.hotel.stars ? `${p.detail.hotel.stars}-star hotel` : "Hotel") : "Day trip");
 
-  const recBar = el("div", { class: "recommendation-bar" }, el("span", {}, rec && rec.source === "aivana" ? "AIVANA RECOMMENDS" : "RECOMMENDED"),
-    el("p", {}, rec ? [/^package/i.test(rec.reason) ? null : el("b", {}, `Package ${rec.package_no}. `), rec.reason, rec.source !== "aivana" && rec.note ? ` (${rec.note})` : ""] : "No recommendation yet."));
+  const recBar = el("div", { class: "recommendation-bar" }, el("span", {}, fromAivana ? "AIVANA RECOMMENDS" : "BEST VALUE"),
+    el("p", {}, rec ? [/^package/i.test(rec.reason) ? null : el("b", {}, `Package ${rec.package_no}. `), rec.reason, !fromAivana && rec.note ? ` ${rec.note}` : ""] : "No recommendation yet.",
+      rec && rec.hotel_note ? el("span", { class: "warn-text" }, " " + rec.hotel_note) : null,
+      rec && rec.hotel_source === "google" ? el("span", { class: "g-credit" }, " Hotels, photos and ratings from Google Maps; room prices are estimates.") : null));
   const select = (name, options, value, onchange) => el("select", { "aria-label": name, value, onchange }, options.map(([v, l]) => el("option", { value: v }, l)));
   const count = el("span");
   const replan = el("button", { type: "button", class: "secondary small" }, "↻ Re-price with RSVPs");
@@ -585,10 +654,10 @@ function planningView(t) {
     });
     const selected = ui.selected === p.package_no;
     return el("article", { class: "package-row" + (selected ? " selected" : ""), onclick: () => { ui.selected = p.package_no; draw(); if (window.matchMedia("(max-width: 760px)").matches) map.scrollIntoView({ behavior: "smooth" }); } },
-      el("div", { class: "hotel-image" }, el("div", { class: "hotel-art " + art(p) }, el("span", {}, h ? cityOf(t.venue_address) || t.venue_name : "Day trip")), el("b", {}, tagOf(p))),
+      el("div", { class: "hotel-image" }, h && h.photo_url ? hotelPhoto(h) : el("div", { class: "hotel-art " + art(p) }, el("span", {}, h ? cityOf(t.venue_address) || t.venue_name : "Day trip")), el("b", {}, tagOf(p))),
       el("div", { class: "package-copy" },
-        el("div", {}, el("span", { class: "rank" }, `${String(i + 1).padStart(2, "0")} · Package ${p.package_no}${isPick(p) ? " · AI recommendation" : ""}`),
-          el("h2", {}, h ? h.name : "Day trip · no hotel", h ? el("small", { "aria-label": `${h.stars} star` }, stars(h.stars)) : null),
+        el("div", {}, el("span", { class: "rank" }, `${String(i + 1).padStart(2, "0")} · Package ${p.package_no}${isPick(p) ? (fromAivana ? " · Aivana recommendation" : " · Best value") : ""}`),
+          el("h2", {}, h ? h.name : "Day trip · no hotel", h ? hotelRating(h) : null),
           el("p", { class: "meta" }, h ? `${d.rooms} rooms · ${h.km_to_venue} km (${h.drive_min_to_venue} min) to ${t.venue_name}` : `${d.route_km} km each way`)),
         el("p", { class: "reason" }, reason),
         el("div", { class: "amenities" }, ((h && h.amenities) || []).map((a) => el("span", {}, "✓ " + label(a))),
@@ -600,48 +669,99 @@ function planningView(t) {
           el("button", { type: "button", class: selected ? "selected-btn" : "secondary" }, selected ? "Selected ✓" : "View package"))));
   }
 
-  function drawMap() {
+  // Map: a real Google map (markers at real coordinates) when GOOGLE_MAPS_BROWSER_KEY is set,
+  // otherwise a drawn map with pins at their real relative positions.
+  const hotelsOnMap = [];
+  for (const x of pkgs) if (x.detail.hotel && !hotelsOnMap.find((y) => y.hotel.id === x.detail.hotel.id)) hotelsOnMap.push({ hotel: x.detail.hotel, no: x.package_no });
+  const mapHost = el("div", { class: "map", role: "region", "aria-label": `Map of ${t.venue_name} and nearby hotels` });
+  const detailBox = el("div", { class: "map-detail" });
+  fill(map, mapHost, detailBox);
+  let gm = null;                                  // {map, hotelMarkers, foodMarker}
+  const pickHotel = (x) => {
+    const cur = pkgs.find((q) => q.package_no === ui.selected);
+    ui.selected = cur && cur.detail.hotel && cur.detail.hotel.id === x.hotel.id ? cur.package_no : x.no;
+    draw();
+  };
+  if (CFG.mapsKey) {
+    loadGoogleMaps().then(async (maps) => {
+      const { Map } = await maps.importLibrary("maps");
+      const { Marker } = await maps.importLibrary("marker");
+      mapHost.classList.add("gmap");
+      const venue = { lat: t.venue_lat, lng: t.venue_lng };
+      const gmap = new Map(mapHost, { center: venue, zoom: 13, mapTypeControl: false, streetViewControl: false, fullscreenControl: true });
+      const bounds = new maps.LatLngBounds(venue);
+      new Marker({ map: gmap, position: venue, title: t.venue_name, label: { text: "★", color: "#fff" }, zIndex: 50 });
+      const hotelMarkers = hotelsOnMap.map((x) => {
+        const pos = { lat: x.hotel.lat, lng: x.hotel.lng };
+        bounds.extend(pos);
+        const m = new Marker({ map: gmap, position: pos, title: x.hotel.name, label: String(x.no) });
+        m.addListener("click", () => pickHotel(x));
+        return { m, x };
+      });
+      gmap.fitBounds(bounds, 40);
+      gm = { map: gmap, hotelMarkers, food: new Marker({ map: gmap, title: "Team meal", label: { text: "🍴" }, visible: false }) };
+      paintGoogle();
+    }).catch(() => { fill(mapHost, el("p", { class: "sub", style: "padding:20px" }, "Google Maps couldn't load. Check GOOGLE_MAPS_BROWSER_KEY and its allowed websites.")); });
+  }
+  function paintGoogle() {
+    if (!gm) return;
     const p = pkgs.find((x) => x.package_no === ui.selected);
-    if (!p) return fill(map, el("div", { class: "map-detail" }, el("p", {}, "Select a package.")));
-    const d = p.detail, h = d.hotel, r = d.restaurant;
-    // Real coordinates scaled into the box (streets drawn behind are decorative).
-    const hotels = [];
-    for (const x of pkgs) if (x.detail.hotel && !hotels.find((y) => y.hotel.id === x.detail.hotel.id)) hotels.push({ hotel: x.detail.hotel, no: x.package_no });
-    const pts = [{ lat: t.venue_lat, lng: t.venue_lng }, ...hotels.map((x) => x.hotel), ...(r ? [r] : [])];
+    const h = p && p.detail.hotel, r = p && p.detail.restaurant;
+    for (const { m, x } of gm.hotelMarkers) {
+      const on = h && h.id === x.hotel.id;
+      m.setZIndex(on ? 40 : 10);
+      m.setOpacity(on ? 1 : 0.75);
+    }
+    if (r) { gm.food.setPosition({ lat: r.lat, lng: r.lng }); gm.food.setVisible(true); } else gm.food.setVisible(false);
+    if (h) gm.map.panTo({ lat: h.lat, lng: h.lng });
+  }
+  function paintDrawn(p) {
+    const h = p.detail.hotel, r = p.detail.restaurant;
+    const pts = [{ lat: t.venue_lat, lng: t.venue_lng }, ...hotelsOnMap.map((x) => x.hotel), ...(r ? [r] : [])];
     const k = Math.cos((t.venue_lat * Math.PI) / 180);
     const xs = pts.map((q) => q.lng * k), ys = pts.map((q) => q.lat);
     const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0.005);
     const cx = (Math.max(...xs) + Math.min(...xs)) / 2, cy = (Math.max(...ys) + Math.min(...ys)) / 2;
-    const pos = (q) => ({ left: `${50 + (84 * (q.lng * k - cx)) / span}%`, top: `${50 - (78 * (q.lat - cy)) / span}%` });
-    const style = (q) => { const s = pos(q); return `left:${s.left};top:${s.top}`; };
-    const mapBox = el("div", { class: "map", role: "img", "aria-label": `Map of ${t.venue_name} and nearby hotels` },
-      el("div", { class: "river" }),
+    const style = (q) => `left:${50 + (84 * (q.lng * k - cx)) / span}%;top:${46 - (70 * (q.lat - cy)) / span}%`;
+    fill(mapHost, el("div", { class: "river" }),
       el("div", { class: "venue-pin", style: style({ lat: t.venue_lat, lng: t.venue_lng }) }, el("b", {}, "★"), el("span", {}, t.venue_name)),
-      hotels.map((x) => el("button", { type: "button", class: "map-pin" + (h && h.id === x.hotel.id ? " active" : ""), style: style(x.hotel),
-        title: x.hotel.name, "aria-label": `Select ${x.hotel.name}`,
-        onclick: () => { ui.selected = h && h.id === x.hotel.id ? p.package_no : x.no; draw(); } }, x.no)),
+      hotelsOnMap.map((x) => el("button", { type: "button", class: "map-pin" + (h && h.id === x.hotel.id ? " active" : ""), style: style(x.hotel),
+        title: x.hotel.name, "aria-label": `Select ${x.hotel.name}`, onclick: () => pickHotel(x) }, x.no)),
       r ? el("span", { class: "map-pin food", style: style(r), title: r.name, "aria-hidden": "true" }, "🍴") : null,
       el("div", { class: "map-legend" }, el("span", {}, "★ Venue"), el("span", {}, "① Hotels by package"), r ? el("span", {}, "🍴 Team meal") : null,
-        el("a", { href: mapLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Open real map ↗")));
-    const choose = el("button", { type: "button", class: "primary full" }, isPick(p) ? "Request Aivana's pick" : `Request package ${p.package_no}`);
+        el("a", { href: gmapsLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Open in Google Maps ↗")));
+  }
+
+  function drawMap() {
+    const p = pkgs.find((x) => x.package_no === ui.selected);
+    if (!p) return fill(detailBox, el("p", {}, "Select a package."));
+    const d = p.detail, h = d.hotel, r = d.restaurant;
+    if (CFG.mapsKey) paintGoogle(); else paintDrawn(p);
+    const canBook = state.me.is_main_planner;
+    const choose = el("button", { type: "button", class: "primary full", disabled: !canBook }, isPick(p) && fromAivana ? "Request Aivana's pick" : `Request package ${p.package_no}`);
     choose.addEventListener("click", () => tripAction(choose, t, "select", { package_no: p.package_no }, "Booking requests prepared. Review and approve them."));
-    fill(map, mapBox, el("div", { class: "map-detail" },
+    fill(detailBox,
       el("span", { class: "eyebrow" }, `Selected package · ${p.package_no}`),
-      el("h2", {}, h ? `${h.name} ${stars(h.stars)}` : "Day trip · no hotel"),
-      el("p", {}, h ? `${h.km_to_venue} km · ${h.drive_min_to_venue} min drive to ${t.venue_name}` : "Bus there and back on game day"),
+      h && h.photo_url ? hotelPhoto(h, "detail-photo") : null,
+      el("h2", {}, h ? h.name : "Day trip · no hotel", h ? " " : null, h ? hotelRating(h) : null),
+      el("p", {}, h ? [`${h.km_to_venue} km · ${h.drive_min_to_venue} min drive to ${t.venue_name} · `,
+        el("a", { href: h.maps_url || gmapsLink(h.lat, h.lng), target: "_blank", rel: "noopener" }, "Google Maps ↗")] : "Bus there and back on game day"),
+      h && h.address ? el("p", {}, h.address) : null,
       el("div", { class: "cost-lines" },
-        h ? el("span", {}, el("em", {}, `Hotel · ${d.rooms} rooms × ${t.nights} night × ${money(h.price_per_night)}`), el("b", {}, money(d.costs.hotel))) : null,
+        h ? el("span", {}, el("em", {}, `Hotel · ${d.rooms} rooms × ${t.nights} night × ${h.price_estimated ? "~" : ""}${money(h.price_per_night)}${h.price_estimated ? " (estimate)" : ""}`), el("b", {}, money(d.costs.hotel))) : null,
         el("span", {}, el("em", {}, `Bus · ${d.bus.count} × ${d.bus.vehicle}`), el("b", {}, money(d.costs.bus))),
         r ? el("span", {}, el("em", {}, `Team meals · ${d.travelers} × ${t.meals} × ${money(r.price_per_person)}`), el("b", {}, money(d.costs.meal))) : null,
-        el("strong", {}, "Calculated total", el("b", {}, money(p.total_cost))),
+        el("strong", {}, h && h.price_estimated ? "Estimated total" : "Calculated total", el("b", {}, money(p.total_cost))),
         Number(t.budget) ? el("span", {}, el("em", {}, "Budget"), el("b", { class: d.within_budget ? "" : "warn-text" }, `${money(t.budget)} · ${d.within_budget ? "within" : "over by " + money(p.total_cost - t.budget)}`)) : null),
-      r ? el("div", { class: "detail-block" }, el("b", {}, "Team meal"), `${r.name} · ${cap(r.cuisine)} · ${r.km_to_venue} km from venue${r.halal_certified ? " · halal certified" : ""}`,
+      h && h.price_estimated ? el("p", { class: "hint" }, "Google Maps doesn't publish room rates. The hotel price is estimated from Google's price level; confirm the real rate with the hotel.") : null,
+      r ? el("div", { class: "detail-block" }, el("b", {}, "Team meal"), `${r.name} · ${cap(r.cuisine)} · ${r.km_to_venue} km from venue${r.halal_certified ? " · halal certified" : ""} · `,
+        el("a", { href: r.maps_url || gmapsLink(r.lat, r.lng), target: "_blank", rel: "noopener" }, "Google Maps ↗"),
         r.missing_diets && r.missing_diets.length ? el("p", { class: "warn-text" }, `No main dish for: ${r.missing_diets.map(label).join(", ")}`) : null,
         el("button", { type: "button", class: "text-btn small", onclick: () => openMenu(r.id, r.name, t.diet_tags || []) }, "View menu →")) : null,
       el("div", { class: "detail-block" }, el("b", {}, "Bus"), `${d.bus.company} ${d.bus.vehicle} (${d.bus.seats} seats${d.bus.wifi ? ", Wi-Fi" : ""}). Leaves ${when(d.suggested_departure)}, ${d.route_km} km / ${d.drive_min} min.`,
         d.late_arrival ? el("p", { class: "warn-text" }, "Arrives later than ideal because of the departure limit.") : null),
       h && h.cancellation_policy ? el("div", { class: "detail-block" }, el("b", {}, "Cancellation"), h.cancellation_policy) : null,
-      choose, el("small", {}, "This prepares the bookings for your approval. Nothing is reserved or paid yet.")));
+      choose, el("small", {}, canBook ? "This prepares the bookings for your approval. Nothing is reserved or paid yet." : plannerOnlyNote()));
   }
 
   function drawCompare() {
@@ -671,7 +791,7 @@ function compareModal(t, [a, b]) {
   const rows = [
     ["Total", cols.map((p) => money(p.total_cost)), best(cols.map((p) => p.total_cost))],
     ["Budget", cols.map((p) => (p.detail.within_budget ? "Within budget" : "Over budget"))],
-    ["Hotel", cols.map((p) => (p.detail.hotel ? `${p.detail.hotel.name} ${stars(p.detail.hotel.stars)}` : "Day trip"))],
+    ["Hotel", cols.map((p) => (p.detail.hotel ? `${p.detail.hotel.name} ${p.detail.hotel.rating ? "★ " + p.detail.hotel.rating + " on Google" : stars(p.detail.hotel.stars)}` : "Day trip"))],
     ["To venue", cols.map((p) => (p.detail.hotel ? `${p.detail.hotel.km_to_venue} km · ${p.detail.hotel.drive_min_to_venue} min` : "–")), best(cols.map((p) => (p.detail.hotel ? p.detail.hotel.km_to_venue : 0)))],
     ["Rooms", cols.map((p) => (p.detail.hotel ? `${p.detail.rooms} × ${money(p.detail.hotel.price_per_night)} = ${money(p.detail.costs.hotel)}` : "–"))],
     ["Amenities", cols.map((p) => ((p.detail.hotel && p.detail.hotel.amenities) || []).map(label).join(", ") || "–")],
@@ -686,7 +806,7 @@ function compareModal(t, [a, b]) {
       el("thead", {}, el("tr", {}, el("th", {}), cols.map((p) => el("th", {}, `Package ${p.package_no}`)))),
       el("tbody", {}, rows.map(([name, vals, marks]) => el("tr", {}, el("th", {}, name), vals.map((v, i) => el("td", { class: marks && marks[i] ? "best" : "" }, v))))))),
     el("div", { class: "row between", style: "margin-top:18px" }, cols.map((p) => {
-      const b = el("button", { type: "button", class: "primary" }, `Request package ${p.package_no}`);
+      const b = el("button", { type: "button", class: "primary", disabled: !state.me.is_main_planner }, `Request package ${p.package_no}`);
       b.addEventListener("click", () => { m.close(); tripAction(null, t, "select", { package_no: p.package_no }, "Booking requests prepared. Review and approve them."); });
       return b;
     }))), { wide: true, eyebrow: t.opponent.toUpperCase() });
@@ -707,18 +827,20 @@ function statusView(t) {
     approve.addEventListener("click", () => tripAction(approve, t, "approve", {}, "Booked. Assign rooms, then share the plan with players."));
     const change = el("button", { type: "button", class: "secondary" }, "Pick a different package");
     change.addEventListener("click", () => tripAction(change, t, "cancel", {}, "Request withdrawn. Choose another package."));
+    if (!state.me.is_main_planner) { approve.disabled = true; change.disabled = true; }
     add(left, el("section", { class: "panel" },
-      el("span", { class: "eyebrow" }, "Step 2 of 3 · Approval"), el("h2", {}, "Waiting for your approval"),
+      el("span", { class: "eyebrow" }, "Step 2 of 3 · Approval"), el("h2", {}, state.me.is_main_planner ? "Waiting for your approval" : "Waiting for the main planner"),
       el("p", { class: "sub" }, "Aivana and the planner only prepare bookings. Nothing is reserved until you approve. Check the cancellation policy first."),
       el("div", { style: "margin-top:14px" }, bookingRows(pending)),
       el("div", { class: "total-band" }, el("span", {}, "TOTAL TO APPROVE"), el("strong", {}, money(total)),
         el("small", {}, Number(t.budget) ? `Budget ${money(t.budget)} · ${total <= t.budget ? "within budget" : "over by " + money(total - t.budget)}` : "No budget set")),
-      el("div", { class: "row", style: "margin-top:20px" }, approve, change)));
+      el("div", { class: "row", style: "margin-top:20px" }, approve, change),
+      state.me.is_main_planner ? null : el("p", { class: "hint" }, plannerOnlyNote())));
   } else if (t.status === "BOOKED") {
     const confirmed = t.bookings.filter((b) => b.status === "CONFIRMED");
     const rooms = el("button", { type: "button", class: "secondary" }, "Assign rooms & buses");
     rooms.addEventListener("click", () => tripAction(rooms, t, "rooms", {}, "Rooms and buses assigned. Re-run this after RSVPs change."));
-    const cancel = el("button", { type: "button", class: "danger" }, "Cancel bookings");
+    const cancel = el("button", { type: "button", class: "danger", disabled: !state.me.is_main_planner, title: state.me.is_main_planner ? null : plannerOnlyNote() }, "Cancel bookings");
     cancel.addEventListener("click", async () => {
       if (await confirmModal("Cancel every booking?", "The hotel, bus and team meal for this trip will be cancelled. Check the cancellation policy before you continue.", "Cancel bookings", true))
         tripAction(cancel, t, "cancel", {}, "Bookings cancelled.");
@@ -915,7 +1037,7 @@ async function teamPage() {
     const shown = team.players.filter((p) => p.full_name.toLowerCase().includes(ui.q) && (ui.diet === "all" || (p.diet_tags || []).includes(ui.diet)));
     fill(table, el("div", { class: "table-row table-header" }, el("span", {}, "Member"), el("span", {}, "Role"), el("span", {}, "Dietary needs"), el("span", {}, "Joined")),
       el("div", { class: "table-row" }, el("span", { class: "member" }, el("i", {}, initials(state.me.profile.full_name)), el("b", {}, state.me.profile.full_name, el("small", {}, state.me.user.email || "You"))),
-        el("span", {}, el("em", { class: "pill ok" }, "Coach")), el("span", {}, "–"), el("span", {}, fmt(state.me.profile.created_at, { month: "short", day: "numeric", year: "numeric" }))),
+        el("span", {}, el("em", { class: "pill ok" }, state.me.is_main_planner ? "Main planner" : "Coach")), el("span", {}, "–"), el("span", {}, fmt(state.me.profile.created_at, { month: "short", day: "numeric", year: "numeric" }))),
       shown.map((p) => el("div", { class: "table-row" }, el("span", { class: "member" }, el("i", {}, initials(p.full_name)), el("b", {}, p.full_name)),
         el("span", {}, "Player"), el("span", {}, (p.diet_tags || []).length ? p.diet_tags.map((d) => el("span", { class: "tag" }, label(d))) : "None"),
         el("span", {}, fmt(p.created_at, { month: "short", day: "numeric", year: "numeric" })))),
@@ -923,7 +1045,30 @@ async function teamPage() {
   }
   draw();
   const ncaaBox = el("section", { class: "panel", style: "margin-top:26px" });
-  add(page, el("div", { class: "table-tools" }, search, diet), table, ncaaBox);
+  const staffBox = el("section", { class: "panel", style: "margin-top:26px" });
+  const staff = team.staff || [];
+  const others = staff.filter((c) => c.id !== team.team.owner_id);
+  const plannerName = (staff.find((c) => c.id === team.team.owner_id) || {}).full_name || "Not set";
+  const handOver = el("select", { "aria-label": "Coach to make main planner" }, others.map((c) => el("option", { value: c.id }, c.full_name)));
+  const handBtn = el("button", { type: "button", class: "secondary" }, "Make main planner");
+  handBtn.addEventListener("click", async () => {
+    const who = others.find((c) => c.id === handOver.value);
+    if (!who || !(await confirmModal("Hand over the main planner role?", `${who.full_name} will be the only one who can book hotels, buses and restaurants. You'll keep view access.`, "Hand over"))) return;
+    busy(handBtn, async () => {
+      await api("/api/team/planner", { method: "POST", body: { profile_id: who.id } });
+      state.me = await api("/api/me");
+      renderShell();
+      flash(`${who.full_name} is now the main planner.`, "ok");
+      route();
+    });
+  });
+  fill(staffBox, el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "Staff"), el("h2", {}, "Main planner")),
+    el("span", { class: "sub" }, plannerName)),
+    el("p", { class: "sub", style: "margin-bottom:12px" }, "Only the main planner can book hotels, buses and restaurants. Other coaches can see trips and prepare plans."),
+    staff.map((c) => el("div", { class: "kv" }, el("span", {}, c.full_name), el("b", {}, c.id === team.team.owner_id ? el("em", { class: "pill ok" }, "Main planner") : "Coach"))),
+    state.me.is_main_planner && others.length ? el("div", { class: "row", style: "margin-top:14px" }, handOver, handBtn)
+      : state.me.is_main_planner ? el("p", { class: "hint", style: "margin-top:10px" }, "When another coach joins your team you can hand the role to them here.") : null);
+  add(page, el("div", { class: "table-tools" }, search, diet), table, staffBox, ncaaBox);
   renderTeamNcaa(ncaaBox);
   return page;
 }
@@ -1029,7 +1174,7 @@ async function playerHome() {
         !t.published ? el("p", { class: "sub", style: "margin-top:12px" }, "Your coach is still planning. The bus time and hotel appear here once they publish the plan.") : null,
         el("div", { class: "rsvp-box" }, el("b", {}, "Are you going?"), rsvpButtons(t))),
       el("section", { class: "room-card" }, el("span", { class: "eyebrow" }, "Your stay"),
-        el("div", { class: "hotel-thumb" }, el("div", { class: "hotel-art art-1" }, el("span", {}, city))),
+        el("div", { class: "hotel-thumb" }, t.hotel && t.hotel.photo_url ? hotelPhoto(t.hotel) : el("div", { class: "hotel-art art-1" }, el("span", {}, city))),
         el("h2", {}, t.hotel ? t.hotel.name : t.published ? "Day trip" : "Hotel not published yet"),
         el("p", {}, t.hotel ? [my.room_no ? `Room ${my.room_no}` : "Room not assigned yet", ` · ${t.hotel.km_to_venue} km from the stadium`] : t.published ? "No overnight stay on this trip." : "You'll see your room here."),
         el("button", { type: "button", class: "secondary", onclick: () => go("trips") }, "View trip details")),
@@ -1068,12 +1213,12 @@ async function playerTrips() {
     const rows = [["Game", when(t.match_at)], ["Venue", [t.venue_name, t.venue_address].filter(Boolean).join(" · ")]];
     if (t.published && t.bus) {
       rows.push(["Bus leaves", `${when(t.suggested_departure)} · ${t.bus.company}${my.bus_no ? " · bus " + my.bus_no : ""}`]);
-      if (t.hotel) rows.push(["Hotel", `${t.hotel.name} · ${t.hotel.km_to_venue} km from the stadium`], ["Your room", my.room_no ? `Room ${my.room_no}` : "Not assigned yet"]);
+      if (t.hotel) rows.push(["Hotel", `${t.hotel.name}${t.hotel.rating ? " · ★ " + t.hotel.rating + " on Google" : ""} · ${t.hotel.km_to_venue} km from the stadium`], ["Your room", my.room_no ? `Room ${my.room_no}` : "Not assigned yet"]);
       if (t.restaurant) rows.push(["Team meal", `${t.restaurant.name} (${cap(t.restaurant.cuisine)})`]);
     }
     const diet = state.me.profile.diet_tags || [];
     add(page, el("article", { class: "player-trip" },
-      el("div", { class: "hotel-art art-" + ((list.indexOf(t) % 4) + 1) }, el("span", {}, city)),
+      t.hotel && t.hotel.photo_url ? hotelPhoto(t.hotel, "trip-photo") : el("div", { class: "hotel-art art-" + ((list.indexOf(t) % 4) + 1) }, el("span", {}, city)),
       el("div", {}, el("div", { class: "row between" }, el("span", { class: "eyebrow" }, t.published ? "Plan ready" : "Being planned"), statusPill(t)),
         el("h2", {}, `${teamName()} at ${t.opponent}`), el("p", {}, city),
         el("dl", {}, rows.map(([k, v]) => el("div", {}, el("dt", {}, k), el("dd", {}, v)))),
@@ -1082,8 +1227,8 @@ async function playerTrips() {
           el("ul", {}, (t.my_menu || []).length ? t.my_menu.map((m) => el("li", {}, el("span", {}, m.name), el("span", { class: "sub" }, m.course)))
             : el("li", { class: "sub" }, "No dish matches all your needs. Tell your coach."))) : null,
         el("div", { class: "row", style: "margin-top:16px" }, el("button", { type: "button", class: "secondary small", onclick: () => go("itinerary/" + t.id) }, "Itinerary"),
-          t.hotel ? el("a", { class: "text-btn small", href: mapLink(t.hotel.lat, t.hotel.lng), target: "_blank", rel: "noopener" }, "Hotel map ↗") : null,
-          el("a", { class: "text-btn small", href: mapLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Stadium map ↗")),
+          t.hotel ? el("a", { class: "text-btn small", href: t.hotel.maps_url || gmapsLink(t.hotel.lat, t.hotel.lng), target: "_blank", rel: "noopener" }, "Hotel on Google Maps ↗") : null,
+          el("a", { class: "text-btn small", href: gmapsLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Stadium on Google Maps ↗")),
         el("p", { class: "privacy" }, "Travel costs and coach planning notes are hidden from player accounts."))));
   }
   return page;
@@ -1115,7 +1260,7 @@ async function itinerary(id) {
       more: [`Drive is about ${Math.round(src.drive / 6) / 10} hours.`, src.bus.wifi ? "The bus has Wi-Fi." : null] });
     items.push(src.hotel ? { time: dowTime(addMin(src.dep, src.drive)), kind: "Stay", title: `Check in at ${src.hotel.name}`,
       detail: `${src.hotel.km_to_venue} km from ${t.venue_name}${my.room_no ? " · room " + my.room_no : ""}`,
-      more: [src.hotel.address || null, el("a", { href: mapLink(src.hotel.lat, src.hotel.lng), target: "_blank", rel: "noopener" }, "Hotel on the map ↗")] }
+      more: [src.hotel.address || null, el("a", { href: src.hotel.maps_url || gmapsLink(src.hotel.lat, src.hotel.lng), target: "_blank", rel: "noopener" }, "Hotel on Google Maps ↗")] }
       : { time: dowTime(addMin(src.dep, src.drive)), kind: "Travel", title: `Arrive in ${city}`, detail: "Day trip, no hotel." });
     if (src.restaurant) items.push({ time: "Team meal", kind: "Meal", title: `Team meal at ${src.restaurant.name}`, detail: `${cap(src.restaurant.cuisine)} · ${src.restaurant.km_to_venue} km from the venue`,
       more: isCoach() ? [src.restaurant.missing_diets && src.restaurant.missing_diets.length ? `No main dish for ${src.restaurant.missing_diets.map(label).join(", ")}.` : "Every dietary need on the roster is covered.",
@@ -1123,7 +1268,7 @@ async function itinerary(id) {
         : [(t.my_menu || []).length ? `Fits your diet: ${t.my_menu.filter((m) => m.course === "main").map((m) => m.name).join(", ") || t.my_menu.map((m) => m.name).join(", ")}.` : "No dish matches all your needs. Tell your coach."] });
   }
   items.push({ time: dowTime(t.match_at), kind: "Game", title: `${teamName()} at ${t.opponent}`, detail: [t.venue_name, t.venue_address].filter(Boolean).join(" · "),
-    more: [el("a", { href: mapLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Stadium on the map ↗")] });
+    more: [el("a", { href: gmapsLink(t.venue_lat, t.venue_lng), target: "_blank", rel: "noopener" }, "Stadium on Google Maps ↗")] });
   if (src) items.push({ time: "After the game", kind: "Travel", title: `Return to ${team.home_name || "campus"}`, detail: `About ${Math.round(src.drive / 6) / 10} hours on the bus` });
 
   const chooser = pool.length > 1 ? el("label", { class: "field", style: "min-width:240px" }, "Trip",
@@ -1218,7 +1363,8 @@ async function settingsPage() {
   const kv = (k, v) => el("div", { class: "kv" }, el("span", {}, k), el("b", {}, v));
   const sections = [profile];
   if (isCoach()) {
-    sections.push(el("section", {}, el("h2", {}, "Team"), kv("Team", team.name || ""), kv("Join code", team.join_code || ""), kv("Home campus", team.home_name || ""),
+    sections.push(el("section", {}, el("h2", {}, "Team"), kv("Team", team.name || ""), kv("Main planner", state.me.main_planner ? state.me.main_planner.name + (state.me.is_main_planner ? " (you)" : "") : "Not set"),
+      kv("Join code", team.join_code || ""), kv("Home campus", team.home_name || ""),
       kv("NCAA program", team.ncaa_name ? `${team.ncaa_name} · ${label(team.sport)} · ${String(team.division || "").toUpperCase()}` : "Not linked"),
       el("button", { type: "button", class: "text-btn", onclick: () => go("team") }, "Manage roster & NCAA link →")));
   } else {
@@ -1328,9 +1474,14 @@ function renderChat() {
     : ["When does the bus leave?", "What can I eat?", "Where am I staying?", "I'm going"];
   fill($("#chat-chips"), ...tips.map((t) => el("button", { type: "button", class: "chip", onclick: () => sendChat(t) }, t)));
   const log = $("#chat-log");
+  const off = state.me && !state.me.aivana;
+  $("#chat-input").disabled = off;
+  $$("#chat-chips button").forEach((b) => (b.disabled = off));
+  if (off) return fill(log, el("div", { class: "msg assistant" }, "Aivana isn't connected yet, so this panel can't answer. ",
+    isCoach() ? "Add AIVANA_API_URL and AIVANA_API_KEY to the server's .env file and restart it." : "Ask your coach."));
   if (!chat.length) return fill(log, el("div", { class: "msg assistant" }, isCoach()
-    ? "Hi! I can compare packages, explain the recommendation, prepare a booking for you to approve, or look up NCAA info."
-    : "Hi! Ask me about your trip: bus time, hotel, room, what you can eat, or RSVP."));
+    ? "Ask Aivana to compare packages, explain the recommendation, prepare a booking for the main planner to approve, or look up NCAA info."
+    : "Ask Aivana about your trip: bus time, hotel, room, what you can eat, or RSVP."));
   fill(log, ...chat.map((m) => el("div", { class: "msg " + m.role }, m.content)));
   log.scrollTop = log.scrollHeight;
 }

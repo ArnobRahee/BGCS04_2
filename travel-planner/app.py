@@ -12,12 +12,13 @@ from dotenv import load_dotenv
 
 load_dotenv()  # must run before the modules below read environment variables
 
-from flask import Flask, g, jsonify, render_template, request  # noqa: E402
+from flask import Flask, g, jsonify, redirect, render_template, request  # noqa: E402
 
 import db as dbmod  # noqa: E402
 from auth import login_required  # noqa: E402
 from chat_assistant import ChatAssistant  # noqa: E402
 from demo import seed_demo  # noqa: E402
+from google_places import PlacesError  # noqa: E402
 from ncaa_client import BASE_URL as NCAA_BASE, DIVISION_NAMES, SPORTS, NCAAClient, NCAAError, game_start_local  # noqa: E402
 from travel_planner import PlanError, TravelPlanner  # noqa: E402
 
@@ -59,6 +60,19 @@ def db_error(exc):
     return jsonify({"error": f"Database problem: {exc}"}), 502
 
 
+def require_main_planner(team=None):
+    """Hotel, bus and restaurant bookings are limited to the team's main planner (teams.owner_id)."""
+    team = team or planner.team(g.profile["team_id"])
+    if team.get("owner_id") != g.profile["id"]:
+        raise PermissionError("Only the team's main planner can book hotels, buses and restaurants.")
+    return team
+
+
+@app.errorhandler(PermissionError)
+def forbidden(exc):
+    return jsonify({"error": str(exc)}), 403
+
+
 def body():
     return request.get_json(silent=True) or {}
 
@@ -72,14 +86,30 @@ def my_trip(trip_id):
 def index():
     config = {"supabaseUrl": os.environ.get("SUPABASE_URL", ""),
               "supabaseKey": os.environ.get("SUPABASE_PUBLISHABLE_KEY", ""),
-              "demo": DEMO, "dietTags": DIET_TAGS, "ncaaBase": NCAA_BASE}
+              "demo": DEMO, "dietTags": DIET_TAGS, "ncaaBase": NCAA_BASE,
+              # Browser key for the Maps JavaScript API. Restrict it to your site's address in Google Cloud.
+              "mapsKey": os.environ.get("GOOGLE_MAPS_BROWSER_KEY", "")}
     return render_template("index.html", config=config)
 
 
 @app.get("/api/health")
 def health():
     return jsonify({"database": "memory (demo)" if DEMO else "supabase", "catalog": planner.data.source,
-                    "aivana": "configured" if planner.aivana.configured else "local fallback"})
+                    "aivana": "connected" if planner.aivana.configured else "not connected",
+                    "google_hotels": "on" if planner.data.places.configured else "off (catalog hotels)",
+                    "google_map": "on" if os.environ.get("GOOGLE_MAPS_BROWSER_KEY") else "off"})
+
+
+@app.get("/api/places/photo/<token>")
+def place_photo(token):
+    """Hotel photo from Google. Public (img tags can't send tokens) but only signed links work."""
+    try:
+        uri = planner.data.places.resolve_photo(token)
+    except PlacesError:
+        return jsonify({"error": "Photo not available."}), 404
+    resp = redirect(uri, code=302)
+    resp.headers["Cache-Control"] = "private, max-age=1800"
+    return resp
 
 
 # -- account --------------------------------------------------------------
@@ -92,7 +122,11 @@ def me():
     meta = g.user.get("user_metadata") or {}
     user = {"id": g.user["id"], "email": g.user.get("email"), "name": meta.get("full_name") or meta.get("name") or "",
             "provider": (g.user.get("app_metadata") or {}).get("provider", "email")}
-    return jsonify({"user": user, "profile": g.profile, "team": team})
+    planner_row = DB.select("profiles", {"id": team["owner_id"]}) if team and team.get("owner_id") else []
+    return jsonify({"user": user, "profile": g.profile, "team": team,
+                    "main_planner": {"id": planner_row[0]["id"], "name": planner_row[0]["full_name"]} if planner_row else None,
+                    "is_main_planner": bool(g.profile and planner_row and planner_row[0]["id"] == g.profile["id"]),
+                    "aivana": planner.aivana.configured})
 
 
 @app.post("/api/onboard")
@@ -155,7 +189,21 @@ def new_join_code(team_name: str) -> str:
 @app.get("/api/team")
 @coach_only
 def team():
-    return jsonify({"team": planner.team(g.profile["team_id"]), "players": planner.team_players(g.profile["team_id"])})
+    tid = g.profile["team_id"]
+    staff = DB.select("profiles", {"team_id": tid, "role": "coach"}, order="full_name.asc")
+    return jsonify({"team": planner.team(tid), "players": planner.team_players(tid),
+                    "staff": [{k: c.get(k) for k in ("id", "full_name", "created_at")} for c in staff]})
+
+
+@app.post("/api/team/planner")
+@coach_only
+def transfer_planner():
+    """Hand the main planner role to another coach on the same team (only the current planner can)."""
+    team = require_main_planner()
+    new_id = str(body().get("profile_id") or "")
+    if not DB.select("profiles", {"id": new_id, "team_id": team["id"], "role": "coach"}):
+        raise PlanError("Pick a coach on your team.")
+    return jsonify(DB.update("teams", {"owner_id": new_id}, {"id": team["id"]})[0])
 
 
 # -- catalog --------------------------------------------------------------
@@ -210,6 +258,7 @@ def replan(trip_id):
 @app.post("/api/trips/<trip_id>/select")
 @coach_only
 def select(trip_id):
+    require_main_planner()
     try:
         no = int(body()["package_no"])
     except (KeyError, ValueError, TypeError):
@@ -220,6 +269,7 @@ def select(trip_id):
 @app.post("/api/trips/<trip_id>/approve")
 @coach_only
 def approve(trip_id):
+    require_main_planner()
     result = planner.approve(my_trip(trip_id), g.profile["id"])
     return jsonify({"ok": result["ok"], "error": result.get("error"), "trip": planner.coach_view(result["trip"])})
 
@@ -227,6 +277,7 @@ def approve(trip_id):
 @app.post("/api/trips/<trip_id>/cancel")
 @coach_only
 def cancel(trip_id):
+    require_main_planner()
     return jsonify(planner.coach_view(planner.cancel_bookings(my_trip(trip_id))))
 
 

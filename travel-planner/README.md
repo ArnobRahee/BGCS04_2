@@ -40,20 +40,67 @@ The **NCAA** tab explores rankings, standings, scores and schools for every spor
 - A team's schedule is built from daily scoreboards (next 14 days; football: this week), so the first
   load for a new sport/division takes a few seconds; after that it's cached.
 
-## Ask Aivana (chatbot)
+## Aivana (your AI)
 
-The **Ask Aivana** button opens a help chat for coaches and players. It answers from the team's own data
-(packages, the AI pick, record, next games, bus time, hotel, room, diet-friendly dishes) and can:
-- **prepare a booking** for a coach ("book package 2"): bookings are created as *pending*; nothing is
-  reserved until the coach clicks **Approve**. The bot can never approve or pay.
-- **record an RSVP** for a player ("I'm going").
+Aivana is the AI API you were given; this app doesn't contain its own AI. Everything "smart" goes to
+your Aivana endpoint:
+- **Ask Aivana panel**: questions about trips, the team's record and games, bus time, hotel, room,
+  diet-friendly dishes. Aivana may also ask the app to **prepare a booking** (main planner only;
+  bookings stay *pending* until a person clicks **Approve**) or **record an RSVP** for a player.
+- **Package recommendation** and **announcement drafts**.
 
-Players' chat context never includes prices or budget. Chat history is kept in the browser.
-Without Aivana keys a rule-based fallback answers the common questions.
+When Aivana isn't connected, the panel says so and answers nothing. The package list then shows a
+plain **best-value ranking** (budget, diet coverage, distance, cost) and drafts use a fill-in template;
+both are labelled as not coming from Aivana. Players' context never includes prices or budget.
 
-**Connecting Aivana:** set `AIVANA_API_URL`, `AIVANA_API_KEY` (and `AIVANA_MODEL` if needed) in `.env` /
-Render. If Aivana's API isn't OpenAI-style, set `AIVANA_API_STYLE=prompt` or adjust
-`AivanaClient.complete()` (the only place that knows the request format). Never commit the key.
+**Connecting Aivana:** put `AIVANA_API_KEY` and `AIVANA_API_URL` (and `AIVANA_MODEL` if needed) in
+`travel-planner/.env`. That file is in `.gitignore`: never commit it. If Aivana's API isn't
+OpenAI-style, set `AIVANA_API_STYLE=prompt` or adjust `AivanaClient.complete()` (the only place that
+knows the request format). Add the key to Render only if you want the live site to use it.
+
+## Main planner
+
+The coach who registers the team is its **main planner** (`teams.owner_id`). Only the main planner can
+request, approve or cancel hotel, bus and restaurant bookings, in the app and through Aivana. Other
+coaches see trips and packages read-only. The main planner can hand the role to another coach on the
+Team page (`POST /api/team/planner`).
+
+## Hotels from Google Maps
+
+With `GOOGLE_MAPS_API_KEY` set, hotels come from **Google Places**: real hotels within 20 km of the
+venue, with their Google photo (and the photographer credit Google requires), rating and a Google
+Maps link. With `GOOGLE_MAPS_BROWSER_KEY` set, the trip page shows a real **Google map** with the
+stadium, the hotels and the team-meal restaurant. Without the keys the app uses the catalog hotels
+and a drawn map.
+
+Google doesn't publish room rates, so a Google hotel's nightly price is an **estimate** from its
+price level and is labelled that way. Bookings are still simulated (MockBookingProvider): real
+reservations need a booking partner API.
+
+Setup (Google Cloud Console, one project, billing enabled; the free monthly usage covers a hackathon):
+1. APIs & Services → Library: enable **Places API (New)** and **Maps JavaScript API**.
+2. Credentials → Create API key → name it "server". Restrict it to *Places API (New)*. Put it in
+   `.env` / Render as `GOOGLE_MAPS_API_KEY`. It never reaches the browser: photos go through
+   `/api/places/photo/<signed token>`.
+3. Create a second key, "browser". Restrict it to *Maps JavaScript API* and, under *Website
+   restrictions*, add `http://localhost:5000/*` and `https://<your-render-app>.onrender.com/*`.
+   Put it in `.env` / Render as `GOOGLE_MAPS_BROWSER_KEY`.
+4. Billing → Budgets & alerts: add a small budget alert so a demo can't run up a bill.
+
+## Confirmation email at sign-up
+
+New email/password accounts get a **confirm your email** link before they can sign in. The app shows
+a "Check your inbox" screen with a **Resend** button and signs the user in when they come back from the
+link. Google sign-ins are already verified by Google.
+
+Supabase setup (dashboard):
+1. Authentication → Sign In / Providers → Email: **Confirm email** on.
+2. Authentication → URL Configuration: Site URL = your Render URL; Redirect URLs: add
+   `http://localhost:5000` and the Render URL.
+3. Authentication → Emails → **SMTP Settings**: turn on custom SMTP with a free sender such as Resend
+   or Brevo. Supabase's built-in sender is for testing only: it only emails your Supabase team
+   members and allows a few emails per hour.
+4. Optional: edit the "Confirm signup" template under Authentication → Emails.
 
 ## Google sign-in (one-time setup)
 
@@ -121,10 +168,12 @@ app writes matches the Supabase schema.
 ## Deploy on Render
 
 `render.yaml` in the repo root is a Blueprint: Render → New → Blueprint → this repo, then paste
-`SUPABASE_SERVICE_KEY` (and Aivana keys if you have them) in the dashboard. Free instances sleep
+`SUPABASE_SERVICE_KEY`, `GOOGLE_MAPS_API_KEY` and `GOOGLE_MAPS_BROWSER_KEY` (and the Aivana keys only
+if you want the live site to use Aivana) in the dashboard. Free instances sleep
 after 15 minutes idle; open the site a minute before you demo.
 
 ## Still to do
 
-- **Aivana:** confirm the request format (see "Connecting Aivana" above).
+- **Aivana:** add `AIVANA_API_URL` and confirm the request format (see "Connecting Aivana" above).
+- **Administrator accounts:** university + sport registration, verification and invitations (spec).
 - **Row level security policies** for direct browser access (today only the server touches data).

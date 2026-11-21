@@ -579,3 +579,17 @@ details.menu li { padding: 6px 0; border-top: 1px solid #eef0f1; display: flex; 
   .auth-main { padding: 30px 22px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+/* Google Maps hotel photos, ratings and map */
+.hotel-photo { position: relative; margin: 0; height: 100%; min-height: inherit; background: #d9e0e3; overflow: hidden; }
+.hotel-photo img { width: 100%; height: 100%; min-height: inherit; object-fit: cover; }
+.hotel-photo figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 8px 5px; font-size: 9px; color: #fff; background: linear-gradient(transparent, #000a); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hotel-photo figcaption a { color: #fff; }
+.hotel-thumb .hotel-photo { height: 105px; }
+.detail-photo { height: 170px; margin: 10px 0 12px; }
+.player-trip > .trip-photo { min-height: 360px; }
+.g-rating { font-size: 12px; font-weight: 600; color: #b06d00; margin-left: 4px; letter-spacing: 0 !important; }
+.g-credit { display: block; font-size: 11px; color: #5f6a72; margin-top: 3px; }
+.map.gmap { background: #e5e3df; }
+.map.gmap::before { display: none; }
+@media (max-width: 760px) { .player-trip > .trip-photo { min-height: 200px; height: 200px; } }

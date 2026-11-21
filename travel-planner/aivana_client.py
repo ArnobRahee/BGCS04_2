@@ -6,11 +6,11 @@ Configure with environment variables (never in code):
   AIVANA_API_STYLE  "openai" (default): body {"model", "messages"} -> choices[0].message.content
                     "prompt": body {"prompt"} -> "response" (or "text"/"output") field
   AIVANA_MODEL      model name for the "openai" style (optional)
-If Aivana's API looks different, change only complete(). Until it's configured (or if a call
-fails) the app uses local fallbacks, so the demo always works:
-  - recommend(): scores packages on budget, diet coverage, distance, stars and cost
-  - draft_announcement(): fills a message template from the booked package
-The AI only ranks and writes text. Every number comes from CostCalc.
+If Aivana's API looks different, change only complete(). Aivana is the only AI in the app.
+When it isn't connected (or a call fails) nothing pretends to be AI:
+  - recommend(): a plain best-value ranking (budget, diet coverage, distance, cost), labelled as such
+  - draft_announcement(): a fill-in-the-blanks template from the booked package
+Aivana only ranks and writes text. Every number comes from CostCalc.
 """
 import json
 import os
@@ -68,8 +68,8 @@ class AivanaClient:
             try:
                 return self._recommend_ai(request, packages)
             except Exception as exc:                     # network error, bad JSON, unknown package...
-                return {**self._recommend_local(request, packages), "note": f"Aivana call failed ({exc}); used local ranking."}
-        return {**self._recommend_local(request, packages), "note": "No Aivana key configured; used local ranking."}
+                return {**self._recommend_local(request, packages), "note": f"Aivana call failed ({exc}), so this is the best-value ranking."}
+        return {**self._recommend_local(request, packages), "note": "Aivana isn't connected, so this is the best-value ranking (cost, budget, diets, distance)."}
 
     def _recommend_ai(self, request, packages):
         brief = [{"package_no": p["package_no"], "total_cost": p["total_cost"],
@@ -115,7 +115,7 @@ class AivanaClient:
             elif rest.get("missing_diets"):
                 bits.append(f"{rest['name']} has no main for: {', '.join(rest['missing_diets'])}")
         reason = f"Package {best['package_no']} at ${best['total_cost']:,.2f}: " + "; ".join(bits) + "."
-        return {"package_no": best["package_no"], "reason": reason, "source": "local"}
+        return {"package_no": best["package_no"], "reason": reason, "source": "ranking"}
 
     # -- announcement ------------------------------------------------------
     def draft_announcement(self, trip: dict, package: dict) -> dict:

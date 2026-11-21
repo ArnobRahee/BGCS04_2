@@ -6,12 +6,14 @@ Trip lifecycle (trips.status):
       +------------------------------+
   Players see hotel, restaurant and times only once the coach publishes a BOOKED trip.
 """
+import copy
 import math
 
 from aivana_client import AivanaClient
 from booking_service import BookingService, MockBookingProvider
 from cost_calc import CostCalc
 from models import TravelRequest, parse_dt
+from google_places import maps_link
 from travel_data import TravelData
 
 
@@ -117,6 +119,9 @@ class TravelPlanner:
         brief = {"opponent": request.opponent, "venue": request.venue_name, "travelers": request.total_travelers(),
                  "nights": request.nights, "budget": request.budget, "diet_tags": request.diet_tags}
         rec = self.aivana.recommend(brief, pkg_dicts) if packages else None
+        hotel_source = "google" if any((p.detail.get("hotel") or {}).get("source") == "google" for p in packages) else "catalog"
+        if rec is not None:
+            rec = {**rec, "hotel_source": hotel_source, "hotel_note": self.data.hotel_warning}
         return self.db.update("trips", {"ai_recommendation": rec, "status": "PLANNING", "selected_package_no": None},
                               {"id": trip["id"]})[0]
 
@@ -131,7 +136,8 @@ class TravelPlanner:
         if trip["status"] == "BOOKED":
             raise PlanError("This trip is already booked. Cancel the bookings first.")
         pkg = self.package(trip, package_no)
-        ai = (trip.get("ai_recommendation") or {}).get("package_no") == package_no
+        rec = trip.get("ai_recommendation") or {}
+        ai = rec.get("source") == "aivana" and rec.get("package_no") == package_no
         self.bookings.request(trip, pkg, coach_id, ai_pick=ai)
         return self.db.update("trips", {"selected_package_no": package_no, "status": "AWAITING_APPROVAL"},
                               {"id": trip["id"]})[0]
@@ -192,18 +198,39 @@ class TravelPlanner:
         view.update({"suggested_departure": d["suggested_departure"], "drive_min": d["drive_min"],
                      "bus": {k: d["bus"].get(k) for k in ("company", "vehicle", "wifi")}})
         if d.get("hotel"):
-            view["hotel"] = {k: d["hotel"].get(k) for k in ("name", "address", "lat", "lng", "stars", "amenities", "km_to_venue")}
+            view["hotel"] = self._hotel_public(d["hotel"])
         if d.get("restaurant"):
             r = d["restaurant"]
             view["restaurant"] = {k: r.get(k) for k in ("id", "name", "address", "lat", "lng", "cuisine", "km_to_venue")}
+            view["restaurant"]["maps_url"] = maps_link(r)
             view["my_menu"] = self.data.menu(r["id"], player.get("diet_tags") or [])
         return view
+
+    def _hotel_public(self, h):
+        out = {k: h.get(k) for k in ("name", "address", "lat", "lng", "stars", "amenities", "km_to_venue",
+                                     "rating", "user_rating_count", "source")}
+        out["photo_url"] = self.data.places.photo_url(h.get("photo"))
+        out["photo_author"] = (h.get("photo") or {}).get("author")
+        out["photo_author_uri"] = (h.get("photo") or {}).get("author_uri")
+        out["maps_url"] = maps_link(h)
+        return out
+
+    def _with_links(self, pkg):
+        pkg = copy.deepcopy(pkg)
+        h = (pkg.get("detail") or {}).get("hotel")
+        if h:
+            h["photo_url"] = self.data.places.photo_url(h.get("photo"))
+            h["maps_url"] = maps_link(h)
+        r = (pkg.get("detail") or {}).get("restaurant")
+        if r:
+            r["maps_url"] = maps_link(r)
+        return pkg
 
     def coach_view(self, trip: dict) -> dict:
         parts = self.db.select("trip_participants", {"trip_id": trip["id"]})
         names = {p["id"]: p["full_name"] for p in self.team_players(trip["team_id"])}
         return {**trip,
-                "packages": self.packages(trip["id"]),
+                "packages": [self._with_links(p) for p in self.packages(trip["id"])],
                 "bookings": self.db.select("bookings", {"trip_id": trip["id"]}, order="created_at.asc"),
                 "participants": [{**p, "full_name": names.get(p["player_id"], "?")} for p in parts],
                 "rsvp_counts": {s: sum(p["rsvp"] == s for p in parts) for s in ("going", "maybe", "not_going")},

@@ -48,7 +48,16 @@
           <label>Password<input name="password" type="password" autocomplete="current-password" minlength="6" required placeholder="6+ characters"></label>
           <button type="submit" id="auth-submit" class="primary full">Sign in</button>
         </form>
-        <p class="auth-note">You stay signed in on this device until you sign out.</p>
+        <p class="auth-note">New accounts get a confirmation email first. You stay signed in on this device until you sign out.</p>
+      </div>
+      <div id="check-inbox" hidden>
+        <div class="success-box" aria-hidden="true">✉</div>
+        <p class="modal-copy">We sent a confirmation link to <b id="inbox-email"></b>. Open it on this device to finish creating your account, then you'll come straight back here.</p>
+        <p class="auth-note">No email after a minute? Check spam, or send it again.</p>
+        <div class="row between" style="margin-top:16px">
+          <button type="button" class="secondary" id="inbox-back">← Back to sign in</button>
+          <button type="button" class="primary" id="inbox-resend">Resend email</button>
+        </div>
       </div>
     </section>
   </div>

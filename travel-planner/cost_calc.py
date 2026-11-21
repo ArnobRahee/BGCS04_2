@@ -72,7 +72,8 @@ class CostCalc:
         if request.nights == 0:
             return [None]
         hotels = [h for h in self.data.hotels_near(request.venue_lat, request.venue_lng, HOTEL_RADIUS_KM)
-                  if int(h["rooms_available"]) >= self.calc_rooms(request, int(h["room_capacity"]))]
+                  if h.get("rooms_available") is None            # Google hotels: availability unknown
+                  or int(h["rooms_available"]) >= self.calc_rooms(request, int(h["room_capacity"]))]
         # best value first: cheap, close, decent stars
         hotels.sort(key=lambda h: float(h["price_per_night"]) + 8 * h["km_to_venue"] - 10 * int(h.get("stars") or 0))
         return hotels[:MAX_HOTELS]
@@ -133,7 +134,8 @@ def _hotel_view(h):
     if not h:
         return None
     keep = ("id", "name", "address", "lat", "lng", "stars", "price_per_night", "amenities",
-            "cancellation_policy", "km_to_venue", "drive_min_to_venue", "source")
+            "cancellation_policy", "km_to_venue", "drive_min_to_venue", "source",
+            "place_id", "rating", "user_rating_count", "price_level", "price_estimated", "google_maps_uri", "photo")
     return {k: h.get(k) for k in keep}
 
 

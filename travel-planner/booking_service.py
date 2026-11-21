@@ -19,7 +19,9 @@ class MockBookingProvider:
 
     def reserve(self, booking: dict, detail: dict):
         """Return (True, confirmation_code) or (False, reason)."""
-        if booking["type"] == "hotel":
+        if booking["type"] == "hotel" and str((detail.get("hotel") or {}).get("id", "")).startswith("gp:"):
+            pass                                   # real hotel from Google: availability isn't published there
+        elif booking["type"] == "hotel":
             hotel = self.data.hotels.get((detail.get("hotel") or {}).get("id"))
             if not hotel:
                 return False, "Hotel no longer in the catalog"

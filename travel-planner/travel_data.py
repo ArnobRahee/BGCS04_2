@@ -7,13 +7,16 @@ import json
 from pathlib import Path
 
 from geo import drive_minutes, haversine_km
+from google_places import GooglePlaces, PlacesError
 
 CATALOG_FILE = Path(__file__).parent / "data" / "catalog.json"
 TABLES = ("venues", "hotels", "restaurants", "menu_items", "bus_options")
 
 
 class TravelData:
-    def __init__(self, db=None):
+    def __init__(self, db=None, places: GooglePlaces | None = None):
+        self.places = places if places is not None else GooglePlaces()
+        self.hotel_warning = None
         self.source = "sample"
         tables = None
         if db is not None:
@@ -43,7 +46,19 @@ class TravelData:
         return sorted(out, key=lambda p: p["km_to_venue"])
 
     def hotels_near(self, lat, lng, radius_km=25):
-        return self._near(self.hotels, lat, lng, radius_km)
+        """Real hotels from Google Places when GOOGLE_MAPS_API_KEY is set, else the catalog."""
+        self.hotel_warning = None
+        if self.places.configured:
+            try:
+                found = self.places.hotels_near(lat, lng, radius_km=min(radius_km, 20))
+                for h in found:
+                    self.hotels[h["id"]] = h          # so the booking step can find it
+                if found:
+                    return found
+                self.hotel_warning = "Google found no hotels near this venue; showing catalog hotels."
+            except PlacesError as exc:
+                self.hotel_warning = f"Couldn't reach Google Places ({exc}); showing catalog hotels."
+        return self._near({k: h for k, h in self.hotels.items() if not k.startswith("gp:")}, lat, lng, radius_km)
 
     def restaurants_near(self, lat, lng, radius_km=15):
         return self._near(self.restaurants, lat, lng, radius_km)
