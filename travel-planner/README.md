@@ -49,7 +49,7 @@ appear only after the coach publishes a booked trip.
 
 - Accounts, teams, trips, packages, bookings, announcements: migration `accounts_teams_trips_bookings_announcements`.
 - Catalog (venues, hotels, restaurants, menu_items, bus_options):
-  `supabase/migrations/20261121030000_catalog_venues_hotels_restaurants_menus_buses.sql`, loaded by
+  `supabase/migrations/20261121025814_catalog_venues_hotels_restaurants_menus_buses.sql`, loaded by
   `supabase/seed/catalog_seed.sql` (4 away venues, 48 hotels, 60 restaurants, 416 menu items, 4 bus companies).
 - The Flask server uses the secret key and does all reads/writes; the browser only signs in.
 
