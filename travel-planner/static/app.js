@@ -388,8 +388,9 @@ function renderShell() {
     state.ncaa = info;
     if (info.linked) {
       $("#team-sub").textContent = `${info.sport_name} · ${info.division_name}`;
-      fill($("#season"), el("span", {}, `${new Date().getFullYear()} SEASON`), el("strong", {}, `${info.name} ${info.sport_name}`),
-        el("small", {}, info.summary && info.summary.record ? `Record ${info.summary.record}` : info.division_name));
+      // Team name stays the app's team; the NCAA program is shown as what it is: a linked data source.
+      fill($("#season"), el("span", {}, `${new Date().getFullYear()} SEASON`), el("strong", {}, team.name || ""),
+        el("small", {}, `NCAA: ${info.name} ${info.sport_name}${info.summary && info.summary.record ? " · " + info.summary.record : ""}`));
     }
   }).catch(() => {});
 }
@@ -654,12 +655,20 @@ function planningView(t) {
   const amenities = [...new Set(pkgs.flatMap((p) => (p.detail.hotel && p.detail.hotel.amenities) || []))].sort();
   const isPick = (p) => rec && rec.package_no === p.package_no;
   const fromAivana = !!rec && rec.source === "aivana";
-  const tagOf = (p) => (isPick(p) ? (fromAivana ? "Aivana's pick" : "Best value") : p.total_cost === minCost ? "Lowest cost" : p.detail.hotel && p.detail.hotel.km_to_venue === minKm ? "Closest" : p.detail.hotel ? (p.detail.hotel.rating ? `★ ${Number(p.detail.hotel.rating).toFixed(1)} on Google` : p.detail.hotel.stars ? `${p.detail.hotel.stars}-star hotel` : "Hotel") : "Day trip");
+  // The three options are chosen in code (CostCalc.highlights); Aivana's pick is marked separately.
+  const HL = { lowest_cost: "Lowest cost", closest: "Closest", best_value: "Best value" };
+  const hlName = (p) => { const d = p.detail; if (!d.highlight) return "";
+    if (d.highlight === "lowest_cost" && d.also_closest) return "Lowest cost · closest";
+    if (d.highlight === "closest" && d.next_closest) return "Next closest";
+    return HL[d.highlight]; };
+  const tagOf = (p) => hlName(p) || (isPick(p) && fromAivana ? "Aivana's pick" : p.detail.hotel ? (p.detail.hotel.rating ? `★ ${Number(p.detail.hotel.rating).toFixed(1)} on Google` : p.detail.hotel.stars ? `${p.detail.hotel.stars}-star hotel` : "Hotel") : "Day trip");
+  const hlRank = (p) => ({ lowest_cost: 1, closest: 2, best_value: 3 }[p.detail.highlight] || 9);
 
   const recBar = el("div", { class: "recommendation-bar" }, el("span", {}, fromAivana ? "AIVANA RECOMMENDS" : "BEST VALUE"),
     el("p", {}, rec ? [/^package/i.test(rec.reason) ? null : el("b", {}, `Package ${rec.package_no}. `), rec.reason, !fromAivana && rec.note ? ` ${rec.note}` : ""] : "No recommendation yet.",
       rec && rec.hotel_note ? el("span", { class: "warn-text" }, " " + rec.hotel_note) : null,
-      rec && rec.hotel_source === "google" ? el("span", { class: "g-credit" }, " Hotels, photos and ratings from Google Maps; room prices are estimates.") : null));
+      rec && rec.hotel_source === "google" ? el("span", { class: "g-credit" }, " Hotels, photos and ratings from Google Maps; room prices are estimates.") : null,
+      rec && rec.hotel_source !== "google" ? el("span", { class: "sim-inline" }, " Demo data: hotels, restaurants, room rates and bus quotes are simulated samples (the bus distance and all totals are calculated).") : null));
   const select = (name, options, value, onchange) => el("select", { "aria-label": name, value, onchange }, options.map(([v, l]) => el("option", { value: v }, l)));
   const count = el("span");
   const replan = el("button", { type: "button", class: "secondary small" }, "↻ Re-price with RSVPs");
@@ -671,13 +680,14 @@ function planningView(t) {
     replan, count);
   const list = el("div", { class: "package-list" });
   const map = el("aside", { class: "map-panel" });
+  const options = el("div", { class: "option-strip", role: "group", "aria-label": "Three options" });
   const compareBar = el("div", { class: "compare-bar", hidden: true });
 
   function visible() {
     const v = pkgs.filter((p) => (ui.budget === "any" || p.detail.within_budget) && (ui.amenity === "All" || ((p.detail.hotel && p.detail.hotel.amenities) || []).includes(ui.amenity)));
     const km = (p) => (p.detail.hotel ? p.detail.hotel.km_to_venue : 0);
     return v.sort(ui.sort === "cost" ? (a, b) => a.total_cost - b.total_cost : ui.sort === "distance" ? (a, b) => km(a) - km(b) || a.total_cost - b.total_cost
-      : (a, b) => (isPick(b) - isPick(a)) || a.total_cost - b.total_cost);
+      : (a, b) => (isPick(b) - isPick(a)) || hlRank(a) - hlRank(b) || a.total_cost - b.total_cost);
   }
 
   function row(p, i) {
@@ -691,14 +701,15 @@ function planningView(t) {
     });
     const selected = ui.selected === p.package_no;
     return el("article", { class: "package-row" + (selected ? " selected" : ""), onclick: () => { ui.selected = p.package_no; draw(); if (window.matchMedia("(max-width: 760px)").matches) map.scrollIntoView({ behavior: "smooth" }); } },
-      el("div", { class: "hotel-image" }, h && h.photo_url ? hotelPhoto(h) : el("div", { class: "hotel-art " + art(p) }, el("span", {}, h ? cityOf(t.venue_address) || t.venue_name : "Day trip")), el("b", {}, tagOf(p))),
+      el("div", { class: "hotel-image" }, h && h.photo_url ? hotelPhoto(h) : el("div", { class: "hotel-art " + art(p), title: h ? "Illustration: sample hotels have no real photos" : null }, el("span", {}, h ? `${cityOf(t.venue_address) || t.venue_name} · sample hotel` : "Day trip")), el("b", {}, tagOf(p))),
       el("div", { class: "package-copy" },
-        el("div", {}, el("span", { class: "rank" }, `${String(i + 1).padStart(2, "0")} · Package ${p.package_no}${isPick(p) ? (fromAivana ? " · Aivana recommendation" : " · Best value") : ""}`),
+        el("div", {}, el("span", { class: "rank" }, `${String(i + 1).padStart(2, "0")} · Package ${p.package_no}${isPick(p) ? (fromAivana ? " · Aivana's pick" : " · Recommended") : ""}`),
           el("h2", {}, h ? h.name : "Day trip · no hotel", h ? hotelRating(h) : null),
           el("p", { class: "meta" }, h ? `${d.rooms} rooms · ${h.km_to_venue} km (${h.drive_min_to_venue} min) to ${t.venue_name}` : `${d.route_km} km each way`)),
         el("p", { class: "reason" }, reason),
         el("div", { class: "amenities" }, ((h && h.amenities) || []).map((a) => el("span", {}, "✓ " + label(a))),
-          r && r.missing_diets && r.missing_diets.length ? el("span", { class: "warn-text" }, `⚠ no main for ${r.missing_diets.map(label).join(", ")}`) : null),
+          r && r.missing_diets && r.missing_diets.length ? el("span", { class: "warn-text" }, `⚠ no main for ${r.missing_diets.map(label).join(", ")}`) : null,
+          r && r.fits_group === false ? el("span", { class: "warn-text" }, `⚠ ${r.name} seats ${r.group_capacity || "fewer"}, not all ${d.travelers}`) : null),
         el("div", { class: "package-bottom" },
           el("label", { onclick: (e) => e.stopPropagation() }, cb, "Compare"),
           el("em", { class: "pill " + (d.within_budget ? "ok" : "warn") }, d.within_budget ? "Within budget" : "Over budget"),
@@ -771,7 +782,7 @@ function planningView(t) {
 
   function drawMap() {
     const p = pkgs.find((x) => x.package_no === ui.selected);
-    if (!p) return fill(detailBox, el("p", {}, "Select a package."));
+    if (!p) return fill(detailBox, el("p", { class: "sub" }, pkgs.length ? "No package matches these filters." : "Select a package."));
     const d = p.detail, h = d.hotel, r = d.restaurant;
     if (CFG.mapsKey) paintGoogle(); else paintDrawn(p);
     const canBook = state.me.is_main_planner;
@@ -794,6 +805,7 @@ function planningView(t) {
       r ? el("div", { class: "detail-block" }, el("b", {}, "Team meal"), `${r.name} · ${cap(r.cuisine)} · ${r.km_to_venue} km from venue${r.halal_certified ? " · halal certified" : ""} · `,
         el("a", { href: r.maps_url || gmapsLink(r.lat, r.lng), target: "_blank", rel: "noopener" }, "Google Maps ↗"),
         r.missing_diets && r.missing_diets.length ? el("p", { class: "warn-text" }, `No main dish for: ${r.missing_diets.map(label).join(", ")}`) : null,
+        r.fits_group === false ? el("p", { class: "warn-text" }, `Group seating for ${r.group_capacity || "fewer"} people, but ${d.travelers} are travelling. Call ahead or split the group.`) : null,
         el("button", { type: "button", class: "text-btn small", onclick: () => openMenu(r.id, r.name, t.diet_tags || []) }, "View menu →")) : null,
       el("div", { class: "detail-block" }, el("b", {}, "Bus"), `${d.bus.company} ${d.bus.vehicle} (${d.bus.seats} seats${d.bus.wifi ? ", Wi-Fi" : ""}). Leaves ${when(d.suggested_departure)}, ${d.route_km} km / ${d.drive_min} min.`,
         d.late_arrival ? el("p", { class: "warn-text" }, "Arrives later than ideal because of the departure limit.") : null),
@@ -810,16 +822,37 @@ function planningView(t) {
       btn);
   }
 
+  function drawOptions() {
+    const picks = pkgs.filter((p) => p.detail.highlight).sort((a, b) => hlRank(a) - hlRank(b));
+    options.hidden = picks.length < 2;
+    fill(options, ...picks.map((p) => {
+      const d = p.detail, h = d.hotel;
+      const where = h ? `${h.name} · ${h.km_to_venue} km` : d.restaurant ? `Day trip · meal ${d.restaurant.km_to_venue} km from venue` : "Day trip";
+      return el("button", { type: "button", class: "option-card" + (ui.selected === p.package_no ? " current" : ""), "aria-pressed": String(ui.selected === p.package_no),
+        onclick: () => { ui.selected = p.package_no; if (!visible().includes(p)) { ui.budget = "any"; ui.amenity = "All"; } draw(); } },
+        el("span", {}, hlName(p), isPick(p) && fromAivana ? el("em", {}, "Aivana's pick") : null),
+        el("strong", {}, money0(p.total_cost)),
+        el("small", {}, `Package ${p.package_no} · ${where}`),
+        el("small", { class: d.within_budget ? "" : "warn-text" }, d.within_budget ? "Within budget" : "Over budget"));
+    }));
+  }
+
   function draw() {
     const v = visible();
+    // Keep the map/detail in step with the list: if the filters hide the selected package,
+    // select the first one still shown.
+    if (!v.some((p) => p.package_no === ui.selected)) ui.selected = v.length ? v[0].package_no : null;
+    drawOptions();
     count.textContent = `${v.length} of ${pkgs.length} packages`;
-    fill(list, ...(v.length ? v.map(row) : [el("div", { class: "empty" }, el("b", {}, pkgs.length ? "No packages fit these filters." : "No hotel near this venue has enough rooms."),
-      el("p", {}, pkgs.length ? "Allow over-budget packages or clear the amenity filter." : "Try fewer nights or another venue."))]));
+    fill(list, ...(v.length ? v.map(row) : [el("div", { class: "empty" }, el("b", {}, pkgs.length ? "No packages fit these filters." : "No hotel within 25 km of this venue has enough rooms."),
+      el("p", {}, pkgs.length ? "Allow over-budget packages or clear the amenity filter."
+        : rec && rec.hotel_source === "google" ? "Try fewer nights, fewer travelers, or plan it as a day trip (0 nights)."
+        : "The demo hotel list covers the venues in the Plan a Trip menu. For other venues, switch on Google Places (GOOGLE_MAPS_API_KEY) to search real hotels, or plan it as a day trip (0 nights)."))]));
     drawMap();
     drawCompare();
   }
   draw();
-  return [recBar, filters, el("div", { class: "discovery" }, list, map), compareBar];
+  return [recBar, options, filters, el("div", { class: "discovery" }, list, map), compareBar];
 }
 
 function compareModal(t, [a, b]) {
@@ -852,8 +885,12 @@ function compareModal(t, [a, b]) {
 /* ---------- approval / booked ---------- */
 function bookingRows(rows) {
   return rows.map((b) => el("div", { class: "booking-row" }, el("em", { class: "pill s-" + b.status }, b.type), el("span", {}, b.summary), el("b", {}, money(b.amount)),
-    b.confirmation_code ? el("code", {}, "Confirmation " + b.confirmation_code) : null));
+    b.confirmation_code ? el("code", { title: "Generated by the demo booking provider; no real reservation exists." }, "Simulated confirmation " + b.confirmation_code) : null));
 }
+
+// Bookings go to a mock provider: nothing is reserved or paid anywhere. Say so wherever bookings appear.
+const simulatedNote = () => el("p", { class: "sim-note" }, el("b", {}, "SIMULATED"),
+  " Demo booking: no hotel, bus or restaurant is contacted and nothing is paid. Confirmation codes are generated by the app.");
 
 function statusView(t) {
   const left = el("div", {});
@@ -861,14 +898,14 @@ function statusView(t) {
     const pending = t.bookings.filter((b) => b.status === "PENDING_APPROVAL");
     const total = pending.reduce((s, b) => s + Number(b.amount), 0);
     const approve = el("button", { type: "button", class: "primary" }, `Approve and book · ${money(total)}`);
-    approve.addEventListener("click", () => tripAction(approve, t, "approve", {}, "Booked. Assign rooms, then share the plan with players."));
+    approve.addEventListener("click", () => tripAction(approve, t, "approve", {}, "Booked (simulated). Assign rooms, then share the plan with players."));
     const change = el("button", { type: "button", class: "secondary" }, "Pick a different package");
     change.addEventListener("click", () => tripAction(change, t, "cancel", {}, "Request withdrawn. Choose another package."));
     if (!state.me.is_main_planner) { approve.disabled = true; change.disabled = true; }
     add(left, el("section", { class: "panel" },
       el("span", { class: "eyebrow" }, "Step 2 of 3 · Approval"), el("h2", {}, state.me.is_main_planner ? "Waiting for your approval" : "Waiting for the main planner"),
       el("p", { class: "sub" }, "Aivana and the planner only prepare bookings. Nothing is reserved until you approve. Check the cancellation policy first."),
-      el("div", { style: "margin-top:14px" }, bookingRows(pending)),
+      simulatedNote(), el("div", { style: "margin-top:14px" }, bookingRows(pending)),
       el("div", { class: "total-band" }, el("span", {}, "TOTAL TO APPROVE"), el("strong", {}, money(total)),
         el("small", {}, Number(t.budget) ? `Budget ${money(t.budget)} · ${total <= t.budget ? "within budget" : "over by " + money(total - t.budget)}` : "No budget set")),
       el("div", { class: "row", style: "margin-top:20px" }, approve, change),
@@ -886,7 +923,7 @@ function statusView(t) {
       el("b", {}, t.published ? "● SHARED WITH PLAYERS" : "○ NOT SHARED YET"),
       el("span", {}, t.published ? "Players can see the hotel, bus time, their room and the menu." : "Players only see the game until you publish the plan below.")));
     add(left, el("section", { class: "panel" }, el("span", { class: "eyebrow" }, "Step 3 of 3 · Booked"), el("h2", {}, "Confirmed bookings"),
-      el("div", { style: "margin-top:10px" }, bookingRows(confirmed)),
+      simulatedNote(), el("div", { style: "margin-top:10px" }, bookingRows(confirmed)),
       el("div", { class: "row", style: "margin-top:18px" }, rooms, el("button", { type: "button", class: "secondary", onclick: () => go("itinerary/" + t.id) }, "View itinerary"), cancel)));
     add(left, composerPanel(t));
   } else {
@@ -904,7 +941,8 @@ function composerPanel(t) {
   const title = el("input", { name: "title", required: true, placeholder: "e.g. Ohio State trip: bus leaves Saturday 3:08 PM" });
   const text = el("textarea", { rows: 7, placeholder: "Bus time, what to pack, hotel, team meal..." });
   const draft = el("button", { type: "button" }, "✦ Generate starting draft");
-  draft.addEventListener("click", () => busy(draft, async () => { const d = await api(`/api/trips/${t.id}/draft`); title.value = d.title; text.value = d.body; }));
+  const draftNote = el("p", { class: "hint draft-note", hidden: true });
+  draft.addEventListener("click", () => busy(draft, async () => { const d = await api(`/api/trips/${t.id}/draft`); title.value = d.title; text.value = d.body; showDraftNote(draftNote, d); }));
   const publish = el("button", { type: "button", class: "primary" }, t.published ? "Post update to players" : "Publish plan to players");
   publish.addEventListener("click", () => {
     if (!title.value.trim()) return flash("Add a title first.", "error");
@@ -917,8 +955,16 @@ function composerPanel(t) {
   if (!t.published) setTimeout(() => draft.click(), 0);
   return el("section", { class: "composer", style: "margin-top:18px" },
     el("div", { class: "composer-head" }, el("b", {}, t.published ? "Message the players" : "Tell the players"), draft),
-    el("label", { class: "field" }, "Title", title), el("label", { class: "field" }, "Message", text),
+    draftNote, el("label", { class: "field" }, "Title", title), el("label", { class: "field" }, "Message", text),
     el("div", { class: "composer-foot" }, el("span", {}, t.published ? "Goes to every player on the team." : "Publishing shows players the hotel, bus time, their room and the menu. Costs stay hidden."), publish));
+}
+
+// Says who wrote a draft: Aivana, or the app's template (when Aivana isn't connected or failed).
+function showDraftNote(node, d) {
+  node.hidden = false;
+  node.classList.toggle("warn-text", d.source !== "aivana");
+  node.textContent = d.source === "aivana" ? "✦ Drafted by Aivana from the booked package. Read it through before you send it."
+    : d.note || "Fill-in template from the booked package. Edit it before sending.";
 }
 
 function rosterPanel(t) {
@@ -960,21 +1006,28 @@ async function planTrip() {
   state.team = team; state.venues = venues;
   const pre = state.prefill || {};
   state.prefill = null;
+  // Keep an unfinished brief if the coach navigates away (cleared once the trip is created).
+  const DRAFT_KEY = "rally-trip-draft";
+  let saved = null;
+  if (!state.prefill && !pre.opponent) { try { saved = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null"); } catch (_) {} }
   const data = {
     opponent: pre.opponent || "", venue_id: pre.venue_id || (pre.venue_name ? "" : (venues[0] || {}).id || ""),
-    venue_name: pre.venue_name || "", venue_lat: "", venue_lng: "", ncaa_game_id: pre.ncaa_game_id || "",
+    venue_name: pre.venue_name || "", venue_address: "", venue_lat: "", venue_lng: "", ncaa_game_id: pre.ncaa_game_id || "",
     match_at: pre.match_at || "", depart_after: "", num_players: team.players.length || 20, num_coaches: 3, num_staff: 2,
     nights: 1, meals: 2, budget: 9000,
   };
+  if (saved && saved.data) Object.assign(data, saved.data);
+  const keepDraft = () => { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ data, step })); } catch (_) {} };
   const diets = [...new Set(team.players.flatMap((p) => p.diet_tags || []))];
-  let step = 1, shown = 1, started = false;
+  let step = (saved && saved.step) || 1, shown = step, started = false;
   const page = el("div", { class: "page narrow" });
   const stepper = el("div", { class: "stepper" });
   const shell = el("div", { class: "form-shell" });
+  shell.addEventListener("input", () => keepDraft());
   add(page, el("div", { class: "page-intro" },
     el("div", {}, el("span", { class: "eyebrow" }, pre.ncaa_game_id ? "NEW AWAY TRIP · FROM NCAA SCHEDULE" : "NEW AWAY TRIP"), el("h1", {}, "Build the travel brief"),
       el("p", {}, "We'll use these details to price every hotel, team meal and bus combination.")),
-    el("button", { type: "button", class: "secondary", onclick: () => go("trips") }, "Cancel")), stepper, shell);
+    el("button", { type: "button", class: "secondary", onclick: () => { try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) {} go("trips"); } }, "Cancel")), stepper, shell);
 
   const venueName = () => (data.venue_id ? (venues.find((v) => v.id === data.venue_id) || {}).name : data.venue_name) || "Custom venue";
   const input = (name, labelText, attrs = {}, wide = false, hint = "") => el("label", { class: wide ? "wide" : "" }, labelText,
@@ -982,14 +1035,78 @@ async function planTrip() {
   const title = (n, h, p) => el("div", { class: "form-title" }, el("i", {}, n), el("div", {}, el("h2", {}, h), el("p", {}, p)));
   const errBox = el("div", { class: "form-error", role: "alert", hidden: true });
 
+  // "Other venue": find coordinates from the name (OpenStreetMap via /api/geocode), never ask for lat/lng first.
+  let autoFound = false;
+  function venueFinder() {
+    const out = el("div", { class: "venue-found", "aria-live": "polite" });
+    const showPicked = () => fill(out, data.venue_lat !== "" && data.venue_lng !== ""
+      ? el("p", { class: "ok-text" }, "📍 ", el("b", {}, data.venue_address || data.venue_name), ` · `,
+          el("a", { href: gmapsLink(data.venue_lat, data.venue_lng), target: "_blank", rel: "noopener" }, "check on Google Maps ↗"))
+      : el("p", { class: "hint" }, "Type the stadium or arena name and city, then Find on map."));
+    const find = el("button", { type: "button", class: "secondary" }, "Find on map");
+    find.addEventListener("click", () => busy(find, async () => {
+      const q = data.venue_name.trim();
+      if (q.length < 3) throw new Error("Type the venue name first, e.g. Ohio Stadium Columbus.");
+      const list = await api("/api/geocode?q=" + encodeURIComponent(q));
+      if (!list.length) return fill(out, el("p", { class: "warn-text" }, "No match. Add the city (e.g. “Kelly/Shorts Stadium, Mount Pleasant”) or enter the coordinates below."));
+      fill(out, el("p", { class: "hint" }, "Pick the right place:"), el("div", { class: "results geo-results" }, list.map((r) =>
+        el("button", { type: "button", onclick: () => { data.venue_lat = String(r.lat); data.venue_lng = String(r.lng); data.venue_address = r.address; showPicked(); } },
+          el("b", {}, r.name), el("small", {}, r.address)))));
+    }));
+    showPicked();
+    if (!autoFound && data.venue_name && data.venue_lat === "") { autoFound = true; setTimeout(() => find.click(), 0); }
+    const manual = el("details", { class: "manual-coords" }, el("summary", {}, "Enter coordinates yourself"),
+      el("div", { class: "form-grid" },
+        input("venue_lat", "Latitude", { type: "number", step: "any", min: -90, max: 90 }),
+        input("venue_lng", "Longitude", { type: "number", step: "any", min: -180, max: 180 }, false, "Right-click the stadium in Google Maps to copy them.")));
+    return el("div", { class: "wide venue-finder" },
+      el("label", {}, "Venue name", el("div", { class: "row" },
+        el("input", { name: "venue_name", value: data.venue_name, placeholder: "e.g. Ohio Stadium, Columbus",
+          oninput: (e) => { data.venue_name = e.target.value; data.venue_lat = ""; data.venue_lng = ""; data.venue_address = ""; } }), find)),
+      out, manual);
+  }
+
+  // Same limits as the server (travel_planner.LIMITS); the server checks again.
+  const LIMITS = { num_players: [0, 150, "players"], num_coaches: [0, 30, "coaches"], num_staff: [0, 50, "staff"],
+    nights: [0, 14, "hotel nights"], meals: [0, 30, "team meals"] };
+  const GRACE = 12 * 3600 * 1000;
+  const whole = (k) => {
+    const [lo, hi, name] = LIMITS[k];
+    const raw = String(data[k]).trim();
+    if (raw === "") return `Enter the number of ${name}.`;
+    const n = Number(raw);
+    if (!Number.isInteger(n)) return `Use a whole number for ${name}.`;
+    if (n < lo || n > hi) return `Enter between ${lo} and ${hi} ${name}.`;
+    return "";
+  };
   function validate() {
     if (step === 1) {
       if (!data.opponent.trim()) return "Enter the opponent.";
       if (!data.match_at) return "Enter the match date and time.";
-      if (!data.venue_id && (!data.venue_name.trim() || data.venue_lat === "" || data.venue_lng === "")) return "Enter the venue's name, latitude and longitude (right-click the stadium in Google Maps to copy them).";
+      if (!data.venue_id && !data.venue_name.trim()) return "Enter the venue's name.";
+      if (!data.venue_id && (data.venue_lat === "" || data.venue_lng === "")) return "Click “Find on map” and pick the venue, so we can find hotels near it.";
+      const match = new Date(data.match_at).getTime();
+      if (Number.isNaN(match)) return "Check the match date and time.";
+      if (match < Date.now() - GRACE) return "The match date is in the past. Pick an upcoming game.";
+      if (data.depart_after) {
+        const dep = new Date(data.depart_after).getTime();
+        if (dep >= match) return "The bus must be able to leave before the match starts.";
+        if (dep < Date.now() - GRACE) return "The earliest departure time is in the past.";
+      }
+    }
+    if (step === 2) {
+      for (const k of ["num_players", "num_coaches", "num_staff"]) { const e = whole(k); if (e) return e; }
+      if (Number(data.num_players) + Number(data.num_coaches) + Number(data.num_staff) === 0) return "Add at least one traveler.";
+    }
+    if (step === 3) {
+      for (const k of ["nights", "meals"]) { const e = whole(k); if (e) return e; }
+      const b = String(data.budget).trim() === "" ? 0 : Number(data.budget);
+      if (!Number.isFinite(b) || b < 0) return "The budget can't be negative.";
+      if (b > 1000000) return "Enter a budget up to $1,000,000.";
     }
     return "";
   }
+  const nowLocal = () => { const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
   function draw() {
     fill(stepper, ...["Game details", "Travelers", "Stay & budget", "Review"].map((x, i) => el("button", {
       type: "button", class: step === i + 1 ? "current" : step > i + 1 ? "complete" : "", "aria-current": step === i + 1 ? "step" : null,
@@ -1002,26 +1119,33 @@ async function planTrip() {
       body = [title("01", "Where are you headed?", "Start with the game and the away venue."), el("div", { class: "form-grid" },
         input("opponent", "Opponent", { required: true, placeholder: "e.g. Ohio State" }),
         el("label", {}, "Away venue", sel),
-        !data.venue_id ? input("venue_name", "Venue name", { placeholder: "e.g. Ohio Stadium" }, true) : null,
-        !data.venue_id ? input("venue_lat", "Venue latitude", { type: "number", step: "any" }) : null,
-        !data.venue_id ? input("venue_lng", "Venue longitude", { type: "number", step: "any" }, false, "Right-click the stadium in Google Maps to copy its coordinates.") : null,
-        input("match_at", "Match date and time", { type: "datetime-local", required: true }),
-        input("depart_after", "Bus can't leave before", { type: "datetime-local" }, false, "Optional, e.g. after Friday classes."))];
+        !data.venue_id ? venueFinder() : null,
+        input("match_at", "Match date and time", { type: "datetime-local", required: true, min: nowLocal() }),
+        input("depart_after", "Bus can't leave before", { type: "datetime-local", min: nowLocal(), max: data.match_at || null }, false, "Optional, must be before the match, e.g. after Friday classes."))];
     } else if (step === 2) {
-      const total = Number(data.num_players) + Number(data.num_coaches) + Number(data.num_staff);
-      body = [title("02", "Who's traveling?", "Counts set the room block, meals and bus capacity."), el("div", { class: "counter-grid" },
-        [["num_players", "Players", `${team.players.length} on the roster`], ["num_coaches", "Coaches", "Travel party"], ["num_staff", "Staff", "Trainers, managers"]].map(([k, name, sub]) =>
-          el("div", { class: "counter" }, el("span", {}, name), el("small", {}, sub), el("div", {},
-            el("button", { type: "button", "aria-label": `Remove one ${name.toLowerCase()}`, onclick: () => { data[k] = Math.max(0, Number(data[k]) - 1); draw(); } }, "−"),
-            el("strong", { "aria-live": "polite" }, data[k]),
-            el("button", { type: "button", "aria-label": `Add one ${name.toLowerCase()}`, onclick: () => { data[k] = Number(data[k]) + 1; draw(); } }, "＋"))))),
-        el("div", { class: "total-band" }, el("span", {}, "TOTAL TRAVEL PARTY"), el("strong", {}, `${total} people`),
-          el("small", {}, `About ${Math.ceil(total / 2)} hotel rooms (2 per room) · the bus is sized from the fleet automatically`))];
+      const partyTotal = () => ["num_players", "num_coaches", "num_staff"].reduce((n, k) => n + (Number(data[k]) || 0), 0);
+      const totalOut = el("strong", {}, `${partyTotal()} people`);
+      const roomsOut = el("small", {}, "");
+      const showTotal = () => { const n = partyTotal(); totalOut.textContent = `${n} people`;
+        roomsOut.textContent = `About ${Math.ceil(n / 2)} hotel rooms (2 per room) · the bus is sized from the fleet automatically`; };
+      showTotal();
+      body = [title("02", "Who's traveling?", "Counts set the room block, meals and bus capacity. Type a number or use − / +."), el("div", { class: "counter-grid" },
+        [["num_players", "Players", `${team.players.length} on the roster`], ["num_coaches", "Coaches", "Travel party"], ["num_staff", "Staff", "Trainers, managers"]].map(([k, name, sub]) => {
+          const [lo, hi] = LIMITS[k];
+          const box = el("input", { type: "number", inputmode: "numeric", min: lo, max: hi, step: 1, value: data[k], class: "counter-input",
+            "aria-label": `Number of ${name.toLowerCase()}`, oninput: (e) => { data[k] = e.target.value; showTotal(); } });
+          const nudge = (d) => { const n = Math.min(hi, Math.max(lo, Math.round(Number(data[k]) || 0) + d)); data[k] = n; box.value = n; showTotal(); };
+          return el("div", { class: "counter" }, el("span", {}, name), el("small", {}, sub), el("div", {},
+            el("button", { type: "button", "aria-label": `Remove one ${name.toLowerCase()}`, onclick: () => nudge(-1) }, "−"),
+            box,
+            el("button", { type: "button", "aria-label": `Add one ${name.toLowerCase()}`, onclick: () => nudge(1) }, "＋")));
+        })),
+        el("div", { class: "total-band" }, el("span", {}, "TOTAL TRAVEL PARTY"), totalOut, roomsOut)];
     } else if (step === 3) {
       body = [title("03", "Stay and budget", "These shape the packages. You still approve before anything is booked."), el("div", { class: "form-grid" },
-        input("nights", "Hotel nights", { type: "number", min: 0 }, false, "0 = day trip, no hotel."),
-        input("meals", "Team meals", { type: "number", min: 0 }),
-        input("budget", "Total budget (USD)", { type: "number", min: 0, step: 50 }, true, "Packages over budget are still shown, marked as over.")),
+        input("nights", "Hotel nights", { type: "number", min: 0, max: 14, step: 1 }, false, "0 = day trip, no hotel. Up to 14."),
+        input("meals", "Team meals", { type: "number", min: 0, max: 30, step: 1 }),
+        input("budget", "Total budget (USD)", { type: "number", min: 0, max: 1000000, step: 50 }, true, "Packages over budget are still shown, marked as over.")),
         el("div", { class: "estimate-note" }, el("b", {}, "Dietary needs from your roster"),
           diets.length ? ["Every restaurant menu is checked for: ", diets.map((d) => el("span", { class: "tag" }, label(d)))] : "No player has listed dietary needs.")];
     } else {
@@ -1034,7 +1158,7 @@ async function planTrip() {
         review("Stay & budget", Number(data.budget) ? `${money0(data.budget)} budget` : "No budget", `${data.nights} night(s) · ${data.meals} team meal(s)${data.depart_after ? " · leave after " + when(data.depart_after) : ""}`, 3)),
         el("div", { class: "estimate-note" }, el("b", {}, "What happens next"), "The planner prices up to 12 hotel × restaurant packages with the cheapest bus that fits, and Aivana recommends one. Nothing is booked yet.")];
     }
-    const back = el("button", { type: "button", class: "secondary", onclick: () => { if (step === 1) go("trips"); else { step--; draw(); } } }, step === 1 ? "← Cancel" : "← Back");
+    const back = el("button", { type: "button", class: "secondary", onclick: () => { if (step === 1) { try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) {} go("trips"); } else { step--; draw(); } } }, step === 1 ? "← Cancel" : "← Back");
     const next = el("button", { type: "button", class: "primary" }, step === 4 ? "Generate packages →" : "Continue →");
     next.addEventListener("click", () => {
       const err = validate();
@@ -1042,15 +1166,17 @@ async function planTrip() {
       if (err) return;
       if (step < 4) { step++; return draw(); }
       const body = { ...data };
-      for (const k of ["venue_id", "venue_name", "venue_lat", "venue_lng", "ncaa_game_id", "depart_after"]) if (!body[k]) delete body[k];
+      for (const k of ["venue_id", "venue_name", "venue_address", "venue_lat", "venue_lng", "ncaa_game_id", "depart_after"]) if (!body[k]) delete body[k];
       busy(next, async () => {
         const trip = await api("/api/trips", { method: "POST", body });
+        try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) {}
         flash(`${trip.opponent}: ${trip.packages.length} packages priced.`, "ok");
         go("trips/" + trip.id);
       });
     });
     const moved = shown !== step;
     shown = step;
+    keepDraft();
     fill(shell, ...body, errBox, el("div", { class: "form-actions" }, back, next));
     if (moved && started) { const first = $("input,select,.counter button", shell); if (first) first.focus(); }
     started = true;
@@ -1166,12 +1292,13 @@ async function renderLinkForm(box, current = {}) {
     await api("/api/team", { method: "PATCH", body: { sport: sport.value, division: division.value, ncaa_seo: picked.slug, ncaa_name: picked.name } });
     forget("/api/ncaa/my-team"); state.ncaa = null;
     state.me = await api("/api/me");
-    flash("Team linked to NCAA.", "ok");
+    flash(`Linked to ${picked.name}. Your team name and planned trips stay the same; NCAA record, ranking and upcoming games now come from ${picked.name}.`, "ok");
     renderShell();
     renderTeamNcaa(box);
   }));
   fill(box, el("span", { class: "eyebrow" }, "NCAA program"), el("h2", { style: "margin:4px 0 6px" }, "Link your NCAA team"),
-    el("p", { class: "sub", style: "margin-bottom:18px" }, "Shows your record, ranking and upcoming games, and lets you plan trips straight from away games."),
+    el("p", { class: "sub", style: "margin-bottom:18px" }, "Shows your record, ranking and upcoming games, and lets you plan trips straight from away games. ",
+      `Linking doesn't rename ${teamName()} or change trips you've already planned.`),
     el("div", { class: "form-grid" }, el("label", {}, "Sport", sport), el("label", {}, "Division", division),
       el("label", { class: "wide" }, "School", search, results)),
     el("div", { class: "row between", style: "margin-top:16px" }, pickedLine,
@@ -1313,7 +1440,8 @@ async function itinerary(id) {
   add(page, el("div", { class: "page-intro" },
     el("div", {}, el("span", { class: "eyebrow" }, `${t.opponent} · ${dayShort(t.match_at)}`), el("h1", {}, "Trip itinerary"),
       el("p", {}, isCoach() ? (t.published ? "Shared with players" : src && src.final ? "Team planner view · not shared with players yet" : "Draft based on the recommended package") : t.published ? "From your team planner's published plan" : "Your team planner hasn't published the travel plan yet")),
-    el("div", { class: "header-buttons" }, chooser, isCoach() ? el("button", { type: "button", class: "primary", onclick: () => go("trips/" + t.id) }, t.published ? "Open trip" : "Open trip to publish") : null)));
+    el("div", { class: "header-buttons" }, chooser, el("button", { type: "button", class: "secondary no-print", onclick: () => window.print() }, "Print / save PDF"),
+      isCoach() ? el("button", { type: "button", class: "primary", onclick: () => go("trips/" + t.id) }, t.published ? "Open trip" : "Open trip to publish") : null)));
   add(page, el("div", { class: "publish-banner" + (t.published ? " live" : "") }, el("b", {}, t.published ? "● LIVE ITINERARY" : "○ DRAFT ITINERARY"),
     el("span", {}, t.published ? "Players can see everything below." : isCoach() ? "Only team planners can see the travel items until you publish the plan." : "Only the game is shown until your team planner publishes the plan.")));
   let open = 0;
@@ -1348,8 +1476,9 @@ async function announcementsPage() {
       const draft = el("button", { type: "button" }, "✦ Generate starting draft");
       draft.addEventListener("click", () => busy(draft, async () => {
         const d = await api(`/api/trips/${tripSel.value}/draft`);
-        title.value = d.title; text.value = d.body; counter.textContent = `${text.value.length}/2000`;
+        title.value = d.title; text.value = d.body; counter.textContent = `${text.value.length}/2000`; showDraftNote(draftNote, d);
       }));
+      const draftNote = el("p", { class: "hint draft-note", hidden: true });
       const publish = el("button", { type: "button", class: "primary" }, "Publish to team");
       publish.addEventListener("click", () => {
         if (!title.value.trim()) return flash("Add a title first.", "error");
@@ -1359,7 +1488,7 @@ async function announcementsPage() {
           route();
         });
       });
-      fill(composer, el("div", { class: "composer-head" }, el("b", {}, "New team announcement"), draft),
+      fill(composer, el("div", { class: "composer-head" }, el("b", {}, "New team announcement"), draft), draftNote,
         el("label", { class: "field" }, "Trip", tripSel), el("label", { class: "field" }, "Title", title), el("label", { class: "field" }, "Message", text),
         el("div", { class: "composer-foot" }, counter, el("button", { type: "button", class: "secondary", onclick: () => (composer.hidden = true) }, "Cancel"), publish),
         el("p", { class: "auth-note" }, "To share a booked trip's hotel, bus and rooms with players, publish the plan from the trip page."));
@@ -1507,7 +1636,7 @@ function loadChat() {
 }
 function saveChat() { try { localStorage.setItem(chatKey(), JSON.stringify(chat.slice(-40))); } catch (_) {} }
 function renderChat() {
-  const tips = isCoach() ? ["Compare the packages", "Why that recommendation?", "Book package 2", "What's our record?"]
+  const tips = isCoach() ? ["Compare the packages", "Why that recommendation?", "What if we stay 2 nights?", "What's our record?"]
     : ["When does the bus leave?", "What can I eat?", "Where am I staying?", "I'm going"];
   fill($("#chat-chips"), ...tips.map((t) => el("button", { type: "button", class: "chip", onclick: () => sendChat(t) }, t)));
   const log = $("#chat-log");
@@ -1519,8 +1648,22 @@ function renderChat() {
   if (!chat.length) return fill(log, el("div", { class: "msg assistant" }, isCoach()
     ? "Ask Aivana to compare packages, explain the recommendation, prepare a booking for the main planner to approve, or look up NCAA info."
     : "Ask Aivana about your trip: bus time, hotel, room, what you can eat, or RSVP."));
-  fill(log, ...chat.map((m) => el("div", { class: "msg " + m.role }, m.content)));
+  fill(log, ...chat.map((m, i) => el("div", { class: "msg " + m.role }, m.content, m.proposal ? proposalButtons(m, i) : null)));
   log.scrollTop = log.scrollHeight;
+}
+// A what-if change Aivana suggested: the app priced it; the coach decides whether to apply it.
+function proposalButtons(m, i) {
+  if (m.proposal.state === "applied") return el("p", { class: "proposal-state" }, "✓ Applied. Packages re-priced.");
+  if (m.proposal.state === "dismissed") return el("p", { class: "proposal-state" }, "Not applied.");
+  const apply = el("button", { type: "button", class: "primary small" }, "Apply and re-price");
+  apply.addEventListener("click", () => busy(apply, async () => {
+    await api(`/api/trips/${m.proposal.trip_id}/update`, { method: "POST", body: { changes: m.proposal.changes } });
+    chat[i].proposal.state = "applied"; saveChat(); renderChat();
+    flash("Trip updated and packages re-priced. Nothing was booked.", "ok");
+    go("trips/" + m.proposal.trip_id);
+  }));
+  const dismiss = el("button", { type: "button", class: "secondary small", onclick: () => { chat[i].proposal.state = "dismissed"; saveChat(); renderChat(); } }, "Keep current plan");
+  return el("div", { class: "proposal-actions" }, apply, dismiss);
 }
 function openChat() { $("#assistant").hidden = false; $("#chat-toggle").setAttribute("aria-expanded", "true"); $("#chat-input").focus(); }
 function closeChat() { $("#assistant").hidden = true; $("#chat-toggle").setAttribute("aria-expanded", "false"); }
@@ -1538,8 +1681,10 @@ async function sendChat(text) {
   $("#chat-log").scrollTop = $("#chat-log").scrollHeight;
   try {
     const r = await api("/api/chat", { method: "POST", body: { messages: chat.slice(-12), trip_id: state.tripId || undefined } });
-    chat.push({ role: "assistant", content: r.reply || "(no answer)" });
-    if (r.action && r.action.ok) {
+    const msg = { role: "assistant", content: r.reply || "(no answer)" };
+    if (r.action && r.action.ok && r.action.type === "propose_change") msg.proposal = { trip_id: r.action.trip_id, changes: r.action.changes };
+    chat.push(msg);
+    if (r.action && r.action.ok && r.action.type !== "propose_change") {
       if (r.action.type === "request_booking") go("trips/" + r.action.trip_id);
       else route();
     }

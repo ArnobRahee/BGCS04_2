@@ -68,3 +68,17 @@ def test_invalid_sport_or_division_never_hits_the_api():
     with pytest.raises(NCAAError):
         c.scoreboard("tennis-men", "d1")
     assert fake.calls == []
+
+
+def test_days_without_games_are_remembered():
+    """A 404 day is cached, so the next page load doesn't re-ask the API 14 times."""
+    from tests.ncaa_fixtures import FakeNCAA
+    fake = FakeNCAA()
+    c = NCAAClient(fetch=fake)
+    c.team_games("soccer-women", "d1", "ohio-st")
+    first = len(fake.calls)
+    assert first == 14
+    c.team_games("soccer-women", "d1", "ohio-st")
+    assert len(fake.calls) == first
+    with pytest.raises(NCAAError):
+        c.scoreboard("soccer-women", "d1", __import__("datetime").date.today())

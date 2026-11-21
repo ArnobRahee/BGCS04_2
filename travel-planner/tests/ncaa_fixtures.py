@@ -47,7 +47,7 @@ class FakeNCAA:
         self.calls, self.fail = [], fail
 
     def __call__(self, path):
-        from ncaa_client import NCAAError
+        from ncaa_client import NCAAError, NCAANoData
         self.calls.append(path)
         if self.fail:
             raise NCAAError("down")
@@ -62,4 +62,4 @@ class FakeNCAA:
         if path.startswith("/scoreboard/basketball-men/d1/"):
             d = (date.today() + timedelta(days=3)).strftime("%Y/%m/%d")
             return HOME_VS_OHIO if path.endswith(d) else {"games": []}
-        raise NCAAError("NCAA has no data for that request.")
+        raise NCAANoData("NCAA has no data for that request.")

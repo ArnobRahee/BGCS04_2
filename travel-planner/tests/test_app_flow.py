@@ -1,7 +1,11 @@
 """End-to-end API flow on the in-memory database, plus a schema check against Supabase."""
+from datetime import datetime, timedelta
+
 import pytest
 
 import app as appmod
+
+SOON = (datetime.now() + timedelta(days=14)).replace(hour=12, minute=0, second=0, microsecond=0).isoformat(timespec="minutes")
 
 # Columns that exist in Supabase (from the migrations). If code writes anything else, Supabase rejects it.
 SCHEMA = {
@@ -124,10 +128,10 @@ def test_onboarding_coach_then_player_with_join_code(client):
 
 def test_trip_validation(client):
     c, _ = client
-    bad = c.post("/api/trips", headers=C, json={"opponent": "", "venue_id": "V002", "match_at": "2026-12-05T12:00"})
+    bad = c.post("/api/trips", headers=C, json={"opponent": "", "venue_id": "V002", "match_at": SOON})
     assert bad.status_code == 400
-    bad = c.post("/api/trips", headers=C, json={"opponent": "X", "venue_id": "NOPE", "match_at": "2026-12-05T12:00"})
+    bad = c.post("/api/trips", headers=C, json={"opponent": "X", "venue_id": "NOPE", "match_at": SOON})
     assert bad.status_code == 400
-    ok = c.post("/api/trips", headers=C, json={"opponent": "Toledo", "venue_id": "V002", "match_at": "2026-12-05T12:00",
+    ok = c.post("/api/trips", headers=C, json={"opponent": "Toledo", "venue_id": "V002", "match_at": SOON,
                                                "nights": 0, "meals": 1})
     assert ok.status_code == 201 and ok.json["packages"][0]["detail"]["hotel"] is None

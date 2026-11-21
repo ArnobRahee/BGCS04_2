@@ -240,6 +240,9 @@ input[type=checkbox], input[type=radio] { width: 17px; height: 17px; accent-colo
 .counter > div { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
 .counter button { width: 44px; height: 44px; border: 1px solid #d4d9dd; font-size: 18px; text-align: center; }
 .counter strong { font-size: 28px; font-weight: 500; }
+.counter .counter-input { width: 84px; height: 48px; margin: 0 8px; padding: 0 4px; text-align: center; font-size: 26px; font-weight: 500; border-color: #d4d9dd; -moz-appearance: textfield; }
+.counter .counter-input::-webkit-outer-spin-button, .counter .counter-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.counter .counter-input:focus { outline: 2px solid var(--blue); outline-offset: 1px; }
 .total-band { margin-top: 18px; background: #f1f5f8; border-left: 3px solid var(--blue); padding: 17px 20px; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
 .total-band span { font-size: 10px; letter-spacing: 1px; font-weight: 700; color: #617282; }
 .total-band strong { font-size: 18px; }
@@ -265,6 +268,15 @@ input[type=checkbox], input[type=radio] { width: 17px; height: 17px; accent-colo
 .recommendation-bar { min-height: 65px; padding: 12px 32px; display: flex; align-items: center; gap: 22px; background: var(--blue-soft); border-bottom: 1px solid #d7e2ed; }
 .recommendation-bar > span { font-size: 10px; letter-spacing: 1px; font-weight: 700; color: var(--blue); white-space: nowrap; }
 .recommendation-bar p { font-size: 12px; color: #4e5c67; }
+.option-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 14px 32px; border-bottom: 1px solid var(--line2); background: #fff; }
+.option-strip[hidden] { display: none; }
+.option-card { display: grid; gap: 2px; padding: 12px 14px; border: 1px solid #d2d7db; background: #fff; text-align: left; cursor: pointer; transition: border .15s, box-shadow .15s; }
+.option-card:hover, .option-card.current { border-color: #7b9fc6; box-shadow: 0 4px 15px #2b4d6d13; }
+.option-card.current { box-shadow: inset 3px 0 0 var(--blue), 0 4px 15px #2b4d6d13; }
+.option-card > span { font-size: 10px; letter-spacing: .8px; text-transform: uppercase; font-weight: 700; color: var(--blue); display: flex; gap: 8px; align-items: center; }
+.option-card > span em { font-style: normal; text-transform: none; letter-spacing: 0; padding: 1px 6px; background: var(--ash); color: #fff; font-size: 10px; }
+.option-card strong { font-size: 20px; font-weight: 600; color: var(--ink); }
+.option-card small { font-size: 11px; color: #6e7880; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .filters { min-height: 66px; padding: 0 32px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line2); flex-wrap: wrap; }
 .filters label { height: 40px; padding: 0 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #d2d7db; background: #fff; font-size: 11px; color: #6e7880; font-weight: 400; }
 .filters select { font-size: 12px; font-weight: 700; border: 0; height: 36px; margin: 0; padding: 0 2px; width: auto; background: transparent; }
@@ -555,6 +567,7 @@ details.menu li { padding: 6px 0; border-top: 1px solid #eef0f1; display: flex; 
   .travel-head { padding: 16px; align-items: flex-start; flex-direction: column; }
   .travel-head > div:last-child { justify-content: flex-start; }
   .recommendation-bar { padding: 12px 16px; display: block; }
+  .option-strip { grid-template-columns: 1fr; padding: 12px 16px; }
   .recommendation-bar > span { display: block; margin-bottom: 4px; }
   .filters { padding: 10px 12px; }
   .filters > span { display: none; }
@@ -705,4 +718,29 @@ details.menu li { padding: 6px 0; border-top: 1px solid #eef0f1; display: flex; 
   .rl-hero { padding: 24px; min-height: 560px; }
   .rl-steps { font-size: 10px; gap: 8px; }
   .rl-next-top em, .rl-way { display: none; }
+}
+
+/* simulated-booking and draft notes */
+.sim-note { margin-top: 12px; padding: 9px 12px; background: #fff7e6; border: 1px solid #f0d9a8; color: #6b5323; font-size: 12px; line-height: 1.5; }
+.sim-note b { margin-right: 6px; font-size: 10px; letter-spacing: 1px; color: #8a5a00; }
+.draft-note { margin: 4px 0 10px; }
+.proposal-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.proposal-state { margin-top: 8px; font-size: 12px; color: #4e7a5a; }
+/* venue finder (Other venue) */
+.venue-finder .row { display: flex; gap: 10px; align-items: stretch; }
+.venue-finder .row input { flex: 1; }
+.venue-finder .row button { margin-top: 7px; white-space: nowrap; }
+.venue-found { margin-top: 8px; font-size: 13px; }
+.venue-found .geo-results { margin-top: 6px; background: #fff; }
+.ok-text { color: #2f6b45; }
+.manual-coords { margin-top: 10px; font-size: 13px; }
+.manual-coords summary { cursor: pointer; color: var(--blue); font-size: 12px; }
+.manual-coords .form-grid { margin-top: 10px; }
+.sim-inline { display: block; margin-top: 4px; color: #8a5a00; font-size: 11px; }
+
+@media print {
+  .sidebar, .topbar, #assistant, #flash, .no-print, .header-buttons, .mobile-bar { display: none !important; }
+  body, .app, main, #page { background: #fff !important; margin: 0 !important; padding: 0 !important; }
+  .shell { display: block !important; margin: 0 !important; padding: 0 !important; width: 100% !important; }
+  .timeline, .panel { break-inside: avoid; }
 }

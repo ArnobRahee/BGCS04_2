@@ -98,7 +98,7 @@ def test_aivana_failure_is_reported_not_faked(env, monkeypatch):
         raise RuntimeError("timeout")
     connect(monkeypatch, planner, boom)
     r = say(c, C, "compare packages")
-    assert r["source"] == "error" and "Couldn't reach Aivana" in r["reply"]
+    assert r["source"] == "error" and "took too long" in r["reply"] and "Nothing was changed" in r["reply"]
 
 
 def test_only_main_planner_books_and_can_hand_over_the_role(env):
@@ -164,3 +164,14 @@ def test_chat_sends_the_whole_area_and_turns_on_web_search(env, monkeypatch):
     sent = connect(monkeypatch, planner, lambda msgs: json.dumps({"reply": "ok", "action": None}))
     say(c, P, "closest hotel?")
     assert "price" not in sent[-1][-1]["content"] and "hotels_near_venue_by_distance" in sent[-1][-1]["content"]
+
+
+def test_context_is_trimmed_to_fit(env, monkeypatch):
+    import chat_assistant
+    c, db, planner = env
+    sent = connect(monkeypatch, planner, lambda msgs: json.dumps({"reply": "ok", "action": None}))
+    monkeypatch.setattr(chat_assistant, "CONTEXT_LIMIT", 2000)
+    trip_id = db.select("trips")[0]["id"]
+    say(c, C, "hello", trip_id)                         # focus trip keeps its data
+    ctx = json.loads(sent[-1][-1]["content"].split("\n", 1)[1].rsplit("\n\nQuestion:", 1)[0])
+    assert ctx["trips"][0]["priced_packages"]

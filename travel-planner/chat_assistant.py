@@ -6,13 +6,21 @@ It never approves or pays for anything. If Aivana isn't connected (no AIVANA_API
 call fails, the reply says so; there are no made-up answers. Players' context never has prices.
 """
 import json
+import logging
 import re
 
+from aivana_client import friendly_error
 from ncaa_client import NCAAError, SPORTS
 from travel_planner import PlanError
 
+log = logging.getLogger("aivana")
+
 ACTIONS_HELP = {
-    "coach": 'To prepare a booking reply with {"type": "request_booking", "trip_id": "<id>", "package_no": <n>}.',
+    "coach": ('To prepare a booking reply with {"type": "request_booking", "trip_id": "<id>", "package_no": <n>}. '
+              'For "what if" questions about a trip that is still PLANNING (more nights, a different budget, fewer players, '
+              'fewer meals, a later departure) don\'t estimate anything: reply with {"type": "propose_change", "trip_id": "<id>", '
+              '"changes": {...}} using only nights, meals, budget, num_players, num_coaches, num_staff or depart_after '
+              '(ISO date-time). The app prices it and the coach decides whether to apply it.'),
     "player": 'To RSVP reply with {"type": "rsvp", "trip_id": "<id>", "rsvp": "going|maybe|not_going"}.',
 }
 
@@ -54,6 +62,7 @@ class ChatAssistant:
                 item["trip_id"] = item.pop("id")
             item["area"] = self._area(t, coach)
             ctx["trips"].append(item)
+        _fit(ctx)
         ctx["announcements"] = [{"title": a["title"], "body": (a.get("body") or "")[:600], "posted": a.get("created_at")}
                                 for a in self.db.select("announcements", {"team_id": team["id"]}, order="created_at.desc", limit=5)]
         return ctx
@@ -92,7 +101,8 @@ class ChatAssistant:
         try:
             reply, action = self._ask_ai(profile, ctx, messages)
         except Exception as exc:
-            return {"reply": f"Couldn't reach Aivana right now ({exc}). Try again in a moment.", "action": None, "source": "error"}
+            log.warning("Aivana chat failed: %s: %s", type(exc).__name__, exc)
+            return {"reply": f"Aivana couldn't answer just now: {friendly_error(exc)}. Nothing was changed.", "action": None, "source": "error"}
         source = "aivana"
         result = self._run_action(profile, team, action) if action else None
         if result:
@@ -152,6 +162,13 @@ class ChatAssistant:
             return {"type": kind, "ok": True, "trip_id": trip["id"],
                     "message": f"Done: package {no} for the {trip['opponent']} trip is waiting for your approval. "
                                "Nothing is reserved until you click Approve on the trip page."}
+        if kind == "propose_change" and profile["role"] == "coach":
+            try:
+                preview = self.planner.preview_changes(trip, team, action.get("changes"))
+            except PlanError as exc:
+                return {"type": kind, "ok": False, "message": f"I can't price that change: {exc}"}
+            return {"type": kind, "ok": True, "trip_id": trip["id"], "changes": preview["changes"],
+                    "preview": preview, "message": _describe_preview(trip, preview)}
         if kind == "rsvp" and profile["role"] == "player":
             choice = action.get("rsvp")
             if choice not in ("going", "maybe", "not_going"):
@@ -166,10 +183,52 @@ class ChatAssistant:
         return None
 
 
+CONTEXT_LIMIT = 120_000      # characters; Aivana accepts 200k per message, leave room for the question
+
+
+def _fit(ctx):
+    """Keep the context under CONTEXT_LIMIT: trim past/cancelled and non-focus trips first."""
+    def size():
+        return len(json.dumps(ctx, default=str))
+    focus = ctx.get("focus_trip_id")
+    trips = ctx["trips"]
+    done = [t for t in trips if t.get("status") in ("CANCELLED", "COMPLETED")]
+    others = [t for t in trips if t.get("trip_id") != focus]
+    for group, key in ((done, "area"), (done, "priced_packages"), (others, "area"), (others, "priced_packages")):
+        if size() <= CONTEXT_LIMIT:
+            return
+        for t in group:
+            if t.pop(key, None) is not None:
+                t.setdefault("trimmed", []).append(key)
+
+
+FIELD_NAMES = {"nights": "hotel nights", "meals": "team meals", "budget": "budget", "num_players": "players",
+               "num_coaches": "coaches", "num_staff": "staff", "depart_after": "earliest departure"}
+OPTION_NAMES = {"lowest_cost": "Lowest cost", "closest": "Closest", "best_value": "Best value"}
+
+
+def _describe_preview(trip, preview):
+    """The numbers in a what-if answer come from CostCalc, never from the model."""
+    def show(key, value):
+        if value is None:
+            return "none"
+        return f"${float(value):,.0f}" if key == "budget" else str(value).replace("T", " ")
+    changes = "; ".join(f"{FIELD_NAMES[k]} {show(k, preview['before'].get(k))} → {show(k, v)}"
+                        for k, v in preview["changes"].items())
+    lines = [f"Priced by the app for the {trip['opponent']} trip ({changes}):"]
+    for key, name in OPTION_NAMES.items():
+        old, new = preview["options_before"].get(key), preview["options_after"].get(key)
+        if new is not None:
+            lines.append(f"• {name}: " + (f"${old:,.2f} → ${new:,.2f}" if old is not None else f"${new:,.2f}"))
+    lines.append(f"{preview['within_budget_after']} of {preview['packages_after']} packages would be within budget. "
+                 "Nothing has changed yet: use Apply to update the trip and re-price.")
+    return "\n".join(lines)
+
+
 def _pkg_brief(p):
     d = p["detail"]
     h, r, b = d.get("hotel") or {}, d.get("restaurant") or {}, d.get("bus") or {}
-    return {"package_no": p["package_no"], "total_cost": float(p["total_cost"]), "within_budget": d["within_budget"],
+    return {"package_no": p["package_no"], "option": d.get("highlight"), "total_cost": float(p["total_cost"]), "within_budget": d["within_budget"],
             "costs": d.get("costs"), "rooms": d.get("rooms"),
             "hotel": h.get("name"), "hotel_km": h.get("km_to_venue"), "hotel_stars": h.get("stars"), "hotel_rating": h.get("rating"),
             "hotel_price_is_estimate": bool(h.get("price_estimated")),

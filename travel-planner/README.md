@@ -1,8 +1,21 @@
-# Away Game Travel Planner
+# Rally · Away Game Travel Planner
 
-A coach enters an away game. The app prices every hotel + restaurant + bus package near the
-venue, Aivana recommends one, the coach approves the booking, and players see where they're
-staying, when the bus leaves, their room, and the dishes on the menu that fit their diet.
+A team planner enters an away game. The app prices every hotel + team-meal restaurant + bus
+package near the venue and highlights **three different options: lowest cost, closest and best
+value**. Aivana (the team's AI, through its official SDK) recommends one of the priced packages
+and answers questions; the **main planner approves** before anything is booked (bookings are
+**simulated**). Players then see where they're staying, when the bus leaves, their room, and the
+dishes that fit their diet, never the prices.
+
+**Live demo:** https://bgcs04-team-travel.onrender.com (free instance: give it a minute to wake up).
+
+**Who does what**
+
+| Code (deterministic) | Aivana (AI) | People |
+|---|---|---|
+| Every number: rooms, buses, hotel/meal/bus costs, totals, budget checks, distances, departure times | Picks one package **by number** from the priced list (schema-limited to real numbers) and explains why | The main planner approves; the AI can only prepare bookings |
+| Chooses the three highlighted options and the best-value score | Drafts the players' announcement from the booked facts | Players RSVP; their counts re-price the trip |
+| Re-prices "what if" changes Aivana proposes in chat | Turns "what if we stay 2 nights?" into a proposed change | The planner clicks **Apply** to keep it |
 
 ## Run it in 1 minute (demo mode, no keys)
 
@@ -14,7 +27,8 @@ python app.py                                     # http://localhost:5000
 ```
 
 With no `SUPABASE_SERVICE_KEY`, the app runs in **demo mode**: in-memory data, the bundled
-catalog, and **Try as coach / Try as player** buttons. Data resets when the server restarts.
+catalog, and **Demo mode: Team Planner / Player** buttons on the sign-in screen. Data resets when
+the server restarts (on Render's free plan that's after 15 idle minutes).
 
 ## Run it with Supabase (real accounts)
 
@@ -125,12 +139,13 @@ Users stay signed in on their device (Supabase keeps the session in the browser)
 | `models.py` | `TravelRequest`, `TravelPackage` | Trip details in; priced package out |
 | `travel_data.py` | `TravelData` | Venues, hotels, restaurants, menus, buses (Supabase, or `data/catalog.json`) |
 | `geo.py` | `DistanceService` | Haversine distance, road km, drive time |
-| `cost_calc.py` | `CostCalc` | Rooms, buses, costs, departure time, diet coverage; all the math |
+| `cost_calc.py` | `CostCalc` | Rooms, buses, costs, departure time, diet coverage, the best-value score and the three highlighted options; all the math |
 | `aivana_client.py` | `AivanaClient` | Picks a package and drafts the announcement (local fallback without a key) |
 | `booking_service.py` | `BookingService`, `MockBookingProvider` | Pending bookings → coach approves → confirmation codes |
 | `travel_planner.py` | `TravelPlanner` | Coordinates everything; player vs coach views |
 | `ncaa_client.py` | | NCAA schools, rankings, standings, scores, brackets; throttled + cached |
-| `chat_assistant.py` | | "Ask Aivana" chatbot: answers from team data, prepares bookings, RSVPs |
+| `chat_assistant.py` | | "Ask Aivana" chatbot: answers from team data (+ web search), prepares bookings, proposes what-if changes, RSVPs |
+| `geocode.py` | | Venue name → coordinates via OpenStreetMap Nominatim (free, cached, 1 request/s) |
 | `app.py`, `auth.py` | | Flask API; every route checks the user's role and team |
 | `templates/`, `static/` | | HTML/CSS/JS front end; sign-in with Supabase Auth |
 
@@ -138,12 +153,22 @@ Users stay signed in on their device (Supabase keeps the session in the browser)
 reserved yet) → coach approves → **Booked** → assign rooms/buses → publish → players see the plan.
 If a hotel sells out, approval fails, nothing stays half-booked, and the trip returns to Planning.
 
+**Input checks (server and form):** no past match dates; the earliest departure must be before
+the match; 0–150 players, 0–30 coaches, 0–50 staff, at least one traveler; 0–14 nights; 0–30 team
+meals; budget $0–$1,000,000; valid coordinates; no duplicate trip for the same opponent and time.
+
 **What players never see:** budget, prices or booking amounts. Hotel and restaurant details
 appear only after the coach publishes a booked trip.
 
 ## Database (Supabase)
 
-- Accounts, teams, trips, packages, bookings, announcements: migration `accounts_teams_trips_bookings_announcements`.
+- Accounts, teams, trips, packages, bookings, announcements:
+  `supabase/migrations/20261121021933_accounts_teams_trips_bookings_announcements.sql`
+  (exported from the live project).
+- `supabase/migrations/20261121180800_revoke_public_execute_rls_auto_enable.sql`: API roles can't
+  call the `rls_auto_enable()` event-trigger function.
+- Row level security is on for every table. Private tables have no policies on purpose (deny-all
+  to the browser); only the Flask server, with the secret key, reads and writes them.
 - NCAA link columns on teams/trips/venues and the `ncaa_cache` table: `supabase/migrations/20261121050635_ncaa_link_and_cache.sql`.
 - Catalog (venues, hotels, restaurants, menu_items, bus_options):
   `supabase/migrations/20261121025814_catalog_venues_hotels_restaurants_menus_buses.sql`, loaded by
@@ -178,7 +203,39 @@ app writes matches the Supabase schema.
 if you want the live site to use Aivana) in the dashboard. Free instances sleep
 after 15 minutes idle; open the site a minute before you demo.
 
-## Still to do
+## Demo script (3–5 minutes)
 
-- **Administrator accounts:** university + sport registration, verification and invitations (spec).
-- **Row level security policies** for direct browser access (today only the server touches data).
+1. **Sign-in screen (20 s).** "Sign in as a Team Planner / Player" shows the sign-in pop-up (real
+   Supabase Auth when keys are set). Click **Demo mode → Team Planner**.
+2. **Plan a trip (60 s).** Plan a Trip → opponent, venue (pick from the list, or *Other venue* →
+   **Find on map**), date. Try a past date or a departure after kick-off to show the checks. Type
+   the traveler counts, set nights and budget → **Generate packages**.
+3. **Three options + Aivana (60 s).** Point at *Lowest cost / Closest / Best value* and Aivana's
+   pick with its reason. Open a package: every line of the cost breakdown adds up to the total.
+   Filter by amenity; compare two packages.
+4. **What-if (40 s).** Ask Aivana: "What if we stay 2 nights?" The app prices it; nothing changes
+   until you click **Apply and re-price**.
+5. **Approve (40 s).** Request the package → *Awaiting approval* (the SIMULATED banner) → Approve →
+   simulated confirmation codes → Assign rooms → Aivana drafts the announcement → Publish.
+6. **Player view (40 s).** Switch to *Player*: next trip, bus time, room, the menu filtered to
+   their diet, RSVP. No prices anywhere.
+
+## Limitations (known and deliberate)
+
+- **Bookings are simulated.** No hotel, bus or restaurant is contacted and nothing is paid; the
+  confirmation codes are generated by the app and labelled as such.
+- **Sample places.** Without a Google Places key, hotels, restaurants, menus, room rates and bus
+  quotes come from a mock catalog that covers the four venues in the Plan a Trip menu (labelled in
+  the app). With Google Places on, hotels and photos are real but room prices are estimates.
+  Hotel photos need a Google Maps key with billing enabled.
+- **Other venues** are found by name with OpenStreetMap; without Google Places they have no
+  catalog hotels, so plan them as day trips or switch Google Places on.
+- **Demo mode** keeps data in memory, so the live demo resets when Render's free instance sleeps.
+  Adding `SUPABASE_SERVICE_KEY` on Render makes data persist.
+- **Aivana** needs `AIVANA_API_KEY`. When it's missing or a call fails, the app says so in plain
+  words and shows its own best-value ranking / a fill-in template, both labelled. Aivana never
+  computes a price and can't approve or pay.
+- **One main planner per team** (transferable). University/administrator accounts and invitations
+  from the original spec are not built.
+- **NCAA data** comes from the unofficial ncaa-api.henrygd.me (rate-limited, cached). Linking an
+  NCAA program changes the record, ranking and schedule shown, not the team's name or its trips.

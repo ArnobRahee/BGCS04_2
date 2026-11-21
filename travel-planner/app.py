@@ -18,9 +18,10 @@ import db as dbmod  # noqa: E402
 from auth import login_required  # noqa: E402
 from chat_assistant import ChatAssistant  # noqa: E402
 from demo import seed_demo  # noqa: E402
+from geocode import Geocoder, GeocodeError  # noqa: E402
 from google_places import PlacesError  # noqa: E402
 from ncaa_client import BASE_URL as NCAA_BASE, DIVISION_NAMES, SPORTS, NCAAClient, NCAAError, game_start_local  # noqa: E402
-from travel_planner import PlanError, TravelPlanner  # noqa: E402
+from travel_planner import NotFound, PlanError, TravelPlanner  # noqa: E402
 
 DIET_TAGS = ["vegetarian", "vegan", "halal", "gluten_free", "nut_free"]
 
@@ -32,6 +33,7 @@ if DEMO:
     DB = dbmod.MemoryDB()
 planner = TravelPlanner(DB)
 ncaa = NCAAClient(None if DEMO else DB)          # Supabase also stores the NCAA cache
+geocoder = Geocoder()
 if DEMO:
     seed_demo(DB, planner)
 
@@ -47,7 +49,7 @@ member = login_required(get_db)
 
 @app.errorhandler(PlanError)
 def plan_error(exc):
-    return jsonify({"error": str(exc)}), 400
+    return jsonify({"error": str(exc)}), 404 if isinstance(exc, NotFound) else 400
 
 
 @app.errorhandler(NCAAError)
@@ -213,6 +215,16 @@ def venues():
     return jsonify(sorted(planner.data.venues.values(), key=lambda v: v["name"]))
 
 
+@app.get("/api/geocode")
+@coach_only
+def geocode():
+    """Venue name -> coordinates (OpenStreetMap), for venues that aren't in the list."""
+    try:
+        return jsonify(geocoder.search(request.args.get("q", "")))
+    except GeocodeError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.get("/api/restaurants/<rid>/menu")
 @member
 def menu(rid):
@@ -253,6 +265,21 @@ def replan(trip_id):
     if trip["status"] in ("AWAITING_APPROVAL", "BOOKED"):
         raise PlanError("Cancel the current bookings before re-planning.")
     return jsonify(planner.coach_view(planner.replan_with_rsvps(trip, planner.team(trip["team_id"]))))
+
+
+@app.post("/api/trips/<trip_id>/preview")
+@coach_only
+def preview_changes(trip_id):
+    trip = my_trip(trip_id)
+    return jsonify(planner.preview_changes(trip, planner.team(trip["team_id"]), body().get("changes")))
+
+
+@app.post("/api/trips/<trip_id>/update")
+@coach_only
+def update_trip(trip_id):
+    """Apply what-if changes the coach confirmed, then re-price. Never books anything."""
+    trip = my_trip(trip_id)
+    return jsonify(planner.coach_view(planner.apply_changes(trip, planner.team(trip["team_id"]), body().get("changes"))))
 
 
 @app.post("/api/trips/<trip_id>/select")
