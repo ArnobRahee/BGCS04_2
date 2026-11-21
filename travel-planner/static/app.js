@@ -561,7 +561,7 @@ function ncaaSummary(info, { compact = false } = {}) {
     el("ul", { class: "game-list" }, games.length ? games.map((g) => el("li", {},
       el("span", {}, el("strong", {}, `${g.is_away ? "at" : "vs"} ${teamLabel(g.opponent)}`),
         `${gameWhen(g)}${g.network ? " · " + g.network : ""}${g.state === "final" ? ` · ${g.away.score}-${g.home.score} final` : ""}`),
-      g.plan && isCoach() ? el("button", { type: "button", class: "secondary small", onclick: () => { state.prefill = g.plan; go("plan"); } }, "Plan trip")
+      g.plan && isCoach() && g.state !== "final" && g.state !== "live" ? el("button", { type: "button", class: "secondary small", onclick: () => { state.prefill = g.plan; go("plan"); } }, "Plan trip")
         : g.url ? el("a", { href: g.url, target: "_blank", rel: "noopener", class: "text-btn small" }, "ncaa.com") : null))
       : el("li", { class: "sub" }, info.sport === "football" ? "No game this week." : "No games in the next two weeks.")),
   ];
