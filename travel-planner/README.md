@@ -1,4 +1,4 @@
-# Rally · Away Game Travel Planner
+# NCAAway · Away Game Travel Planner (technical README)
 
 A team planner enters an away game. The app prices every hotel + team-meal restaurant + bus
 package near the venue and highlights **three different options: lowest cost, closest and best
