@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Away Game Travel Planner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <h1>Away Game Travel Planner</h1>
+    <p class="sub">Enter the trip details. We calculate every package, then Aivana recommends the best one.</p>
+
+    <form id="trip-form">
+      <label>Opponent <input name="opponent" required></label>
+      <label>Game date <input name="date" type="date" required></label>
+      <label>Destination <input name="destination" placeholder="City"></label>
+      <label>Distance one-way (miles) <input name="distance_miles" type="number" min="1" value="120"></label>
+      <label>Players <input name="num_players" type="number" min="0" value="26" required></label>
+      <label>Coaches <input name="num_coaches" type="number" min="0" value="4" required></label>
+      <label>Staff <input name="num_staff" type="number" min="0" value="3" required></label>
+      <label>Hotel nights <input name="nights" type="number" min="0" value="1"></label>
+      <label>Can't leave before <input name="earliest_departure" type="time"></label>
+      <button type="submit">Plan trip</button>
+    </form>
+
+    <p id="status" role="status"></p>
+    <section id="recommendation" hidden></section>
+    <section id="results"></section>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
