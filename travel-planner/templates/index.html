@@ -110,10 +110,11 @@
           <label><input type="radio" name="role" value="player"><span><b>Player</b><small>Join with your team planner's code and RSVP to trips</small></span></label>
         </div>
         <div data-for="coach" class="form-grid">
-          <label class="wide">Team name<input name="team_name" placeholder="BGSU Falcons"></label>
-          <label class="wide">Home campus (where the bus leaves)<input name="home_name" value="Doyt L. Perry Stadium (BGSU)"></label>
-          <label>Latitude<input name="home_lat" type="number" step="any" value="41.37806"></label>
-          <label>Longitude<input name="home_lng" type="number" step="any" value="-83.6225"></label>
+          <label class="wide">Team name<input name="team_name" placeholder="e.g. Harvard Women's Volleyball"></label>
+          <label class="wide">Home campus (where the bus leaves)<span class="home-find"><input name="home_name" placeholder="e.g. Harvard University, Cambridge"><button type="button" class="secondary" id="home-find">Find on map</button></span></label>
+          <p class="hint wide" id="home-found" aria-live="polite">Find your campus on the map, or type its coordinates below.</p>
+          <label>Latitude<input name="home_lat" type="number" step="any" min="-90" max="90"></label>
+          <label>Longitude<input name="home_lng" type="number" step="any" min="-180" max="180"></label>
         </div>
         <div data-for="player" hidden>
           <label class="field">Team join code<input name="join_code" placeholder="FALCON-1234" autocapitalize="characters"></label>

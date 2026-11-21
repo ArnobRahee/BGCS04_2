@@ -17,7 +17,7 @@ def iso(d):
 def client(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db)
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     monkeypatch.setattr(appmod, "DB", db)
     monkeypatch.setattr(appmod, "planner", planner)
     return appmod.app.test_client()

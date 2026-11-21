@@ -14,7 +14,7 @@ C, P = {"Authorization": "Bearer demo-coach"}, {"Authorization": "Bearer demo-pl
 def env(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db)
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     monkeypatch.setattr(appmod, "DB", db)
     monkeypatch.setattr(appmod, "planner", planner)
     monkeypatch.setattr(appmod, "ncaa", NCAAClient(db=db, fetch=FakeNCAA()))

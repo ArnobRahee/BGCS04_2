@@ -21,7 +21,9 @@ from demo import seed_demo  # noqa: E402
 from geocode import Geocoder, GeocodeError  # noqa: E402
 from google_places import PlacesError  # noqa: E402
 from ncaa_client import BASE_URL as NCAA_BASE, DIVISION_NAMES, SPORTS, NCAAClient, NCAAError, game_start_local  # noqa: E402
+from suggestions import eligible_games  # noqa: E402
 from travel_planner import NotFound, PlanError, TravelPlanner  # noqa: E402
+from workspaces import Workspaces, WorkspaceError, identity  # noqa: E402
 
 DIET_TAGS = ["vegetarian", "vegan", "halal", "gluten_free", "nut_free"]
 
@@ -68,6 +70,15 @@ def require_main_planner(team=None):
     if team.get("owner_id") != g.profile["id"]:
         raise PermissionError("Only the team's main planner can book hotels, buses and restaurants.")
     return team
+
+
+@app.errorhandler(WorkspaceError)
+def workspace_error(exc):
+    return jsonify({"error": str(exc)}), 400
+
+
+def ws():
+    return Workspaces(DB, ncaa, geocoder, new_join_code)
 
 
 @app.errorhandler(PermissionError)
@@ -118,14 +129,18 @@ def place_photo(token):
 @app.get("/api/me")
 @login_required(get_db, need_profile=False)
 def me():
-    team = planner.team(g.profile["team_id"]) if g.profile and g.profile.get("team_id") else None
+    full = planner.team(g.profile["team_id"]) if g.profile and g.profile.get("team_id") else None
+    team = full
     if team and g.profile["role"] != "coach":
         team = {k: team.get(k) for k in ("id", "name", "home_name", "ncaa_seo", "ncaa_name", "sport", "division")}
+    if team:
+        team = {**team, "identity": identity(full)}
     meta = g.user.get("user_metadata") or {}
     user = {"id": g.user["id"], "email": g.user.get("email"), "name": meta.get("full_name") or meta.get("name") or "",
             "provider": (g.user.get("app_metadata") or {}).get("provider", "email")}
     planner_row = DB.select("profiles", {"id": team["owner_id"]}) if team and team.get("owner_id") else []
-    return jsonify({"user": user, "profile": g.profile, "team": team,
+    teams = ws().list_for(g.profile) if g.profile and g.profile.get("team_id") else []
+    return jsonify({"user": user, "profile": g.profile, "team": team, "teams": teams,
                     "main_planner": {"id": planner_row[0]["id"], "name": planner_row[0]["full_name"]} if planner_row else None,
                     "is_main_planner": bool(g.profile and planner_row and planner_row[0]["id"] == g.profile["id"]),
                     "aivana": planner.aivana.configured})
@@ -148,7 +163,7 @@ def onboard():
                         "home_lat": float(b["home_lat"]), "home_lng": float(b["home_lng"]),
                         "owner_id": g.user["id"], "join_code": new_join_code(str(b["team_name"]))}
         except (KeyError, ValueError, TypeError):
-            return jsonify({"error": "Enter a team name and the home campus latitude/longitude."}), 400
+            return jsonify({"error": "Enter a team name and find the home campus on the map (or type its coordinates)."}), 400
         if not team_row["name"]:
             return jsonify({"error": "Enter a team name."}), 400
         team = DB.insert("teams", team_row)[0]
@@ -163,6 +178,7 @@ def onboard():
         DB.update("profiles", profile, {"id": g.user["id"]})
     else:
         DB.insert("profiles", profile)
+    ws().add_member(team["id"], g.user["id"], role)
     return jsonify({"ok": True})
 
 
@@ -192,7 +208,7 @@ def new_join_code(team_name: str) -> str:
 @coach_only
 def team():
     tid = g.profile["team_id"]
-    staff = DB.select("profiles", {"team_id": tid, "role": "coach"}, order="full_name.asc")
+    staff = planner.team_members(tid, "coach")
     return jsonify({"team": planner.team(tid), "players": planner.team_players(tid),
                     "staff": [{k: c.get(k) for k in ("id", "full_name", "created_at")} for c in staff]})
 
@@ -203,7 +219,7 @@ def transfer_planner():
     """Hand the main planner role to another coach on the same team (only the current planner can)."""
     team = require_main_planner()
     new_id = str(body().get("profile_id") or "")
-    if not DB.select("profiles", {"id": new_id, "team_id": team["id"], "role": "coach"}):
+    if new_id not in {c["id"] for c in planner.team_members(team["id"], "coach")}:
         raise PlanError("Pick a team planner on your team.")
     return jsonify(DB.update("teams", {"owner_id": new_id}, {"id": team["id"]})[0])
 
@@ -216,7 +232,7 @@ def venues():
 
 
 @app.get("/api/geocode")
-@coach_only
+@login_required(get_db, need_profile=False)
 def geocode():
     """Venue name -> coordinates (OpenStreetMap), for venues that aren't in the list."""
     try:
@@ -458,27 +474,79 @@ def ncaa_brackets(sport, division, year):
 def ncaa_my_team():
     team = planner.team(g.profile["team_id"])
     if not (team.get("ncaa_seo") and team.get("sport") and team.get("division")):
-        return jsonify({"linked": False})
-    out = {"linked": True, "seo": team["ncaa_seo"], "name": team.get("ncaa_name"), "sport": team["sport"],
+        return jsonify({"linked": False, "team_id": team["id"], "identity": identity(team)})
+    out = {"linked": True, "team_id": team["id"], "identity": identity(team), "seo": team["ncaa_seo"], "name": team.get("ncaa_name"), "sport": team["sport"],
            "sport_name": SPORTS.get(team["sport"], {}).get("name"), "division": team["division"],
            "division_name": DIVISION_NAMES.get(team["division"], team["division"]),
            "logo": f"{NCAA_BASE}/logo/{team['ncaa_seo']}.svg"}
     out["summary"] = ncaa.team_summary(team["sport"], team["division"], team.get("ncaa_name") or "")
-    games, warning = [], None
-    if SPORTS.get(team["sport"], {}).get("scoreboard", True):
-        try:
-            games = ncaa.team_games(team["sport"], team["division"], team["ncaa_seo"])
-        except NCAAError as exc:
-            warning = str(exc)
-    venues_by_school = {v.get("school_seo"): v for v in planner.data.venues.values() if v.get("school_seo")}
-    for gm in games:
-        if gm["is_away"] and g.profile["role"] == "coach":
-            v = venues_by_school.get(gm["home"]["seo"])
-            gm["plan"] = {"opponent": gm["home"]["short"], "match_at": game_start_local(gm), "ncaa_game_id": gm["id"],
-                          "venue_id": v["id"] if v else None,
-                          "venue_name": None if v else f"{gm['home']['full'] or gm['home']['short']} home venue"}
+    games, warning = team_schedule(team)
+    if g.profile["role"] == "coach":
+        planned = planned_game_ids(team["id"])
+        for gm in games:
+            if gm["is_away"]:
+                gm["plan"] = plan_prefill(gm, team)
+                gm["planned_trip_id"] = planned.get(gm["id"])
     out["games"], out["games_warning"] = games, warning
     return jsonify(out)
+
+
+def team_schedule(team):
+    """The selected team's upcoming games from NCAA, by its own school id (ncaa_seo)."""
+    if not SPORTS.get(team["sport"], {}).get("scoreboard", True):
+        return [], f"NCAA doesn't publish game schedules for {SPORTS[team['sport']]['name']}."
+    try:
+        return ncaa.team_games(team["sport"], team["division"], team["ncaa_seo"]), None
+    except NCAAError as exc:
+        return [], str(exc)
+
+
+def planned_game_ids(team_id):
+    """game id -> trip id for this team's saved (not cancelled) trips."""
+    return {t["ncaa_game_id"]: t["id"] for t in DB.select("trips", {"team_id": team_id})
+            if t.get("ncaa_game_id") and t.get("status") != "CANCELLED"}
+
+
+def plan_prefill(gm, team):
+    """Wizard prefill from schedule data only. The venue is the home school's catalog venue when we
+    have one; otherwise the home school's name, flagged so the planner confirms the real venue."""
+    v = next((v for v in planner.data.venues.values() if v.get("school_seo") == gm["home"]["seo"]), None)
+    return {"team_id": team["id"], "ncaa_game_id": gm["id"], "opponent": gm["home"]["short"] or gm["home"]["full"],
+            "match_at": game_start_local(gm), "venue_id": v["id"] if v else None,
+            "venue_name": None if v else (gm["home"]["full"] or gm["home"]["short"]),
+            "venue_confirmed": bool(v), "venue_label": v["name"] if v else (gm["home"]["full"] or gm["home"]["short"])}
+
+
+@app.get("/api/suggestions")
+@coach_only
+def suggestions():
+    """Upcoming away games worth planning. Code decides which games qualify (future, away, no trip yet,
+    opponent and date known); Aivana only chooses among those ids and explains why."""
+    team = planner.team(g.profile["team_id"])
+    out = {"team_id": team["id"], "identity": identity(team), "games": [], "pick": None, "warning": None}
+    if not (team.get("ncaa_seo") and team.get("sport") and team.get("division")):
+        out["warning"] = "Link your NCAA program on the Team page to see upcoming games."
+        return jsonify(out)
+    games, out["warning"] = team_schedule(team)
+    planned = planned_game_ids(team["id"])
+    out["games"] = eligible_games(games, planned, lambda gm: plan_prefill(gm, team))
+    out["upcoming_away"] = sum(1 for gm in games if gm.get("is_away"))
+    if out["games"]:
+        out["pick"] = planner.aivana.suggest_game(identity(team), out["games"])
+    return jsonify(out)
+
+
+@app.post("/api/trips/parse")
+@coach_only
+def parse_trip():
+    """Free-text trip request -> form fields (Aivana structured output). Nothing is saved."""
+    text = str(body().get("text") or "").strip()
+    if len(text) < 8:
+        raise PlanError("Describe the trip in a sentence, e.g. 'At Toledo on Dec 5 at 7pm, 22 players, 3 coaches, budget $8,000'.")
+    try:
+        return jsonify(planner.aivana.parse_trip(text[:2000], date.today()))
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 503
 
 
 @app.patch("/api/team")
@@ -501,9 +569,29 @@ def link_team():
         name = match.get("name") or name
     except NCAAError:
         pass
-    team = DB.update("teams", {"ncaa_seo": seo, "ncaa_name": name or seo, "sport": sport, "division": division},
-                     {"id": g.profile["team_id"]})[0]
-    return jsonify(team)
+    long_name = ""
+    try:
+        long_name = next((s.get("long") or "" for s in ncaa.schools() if s.get("slug") == seo), "")
+    except NCAAError:
+        pass
+    current = planner.team(g.profile["team_id"])
+    result = ws().choose_program(g.profile, current, sport, division, seo, name or seo, long_name)
+    return jsonify({**result, "identity": identity(result["team"])})
+
+
+@app.get("/api/teams")
+@member
+def my_teams():
+    """The team workspaces this user belongs to (the selected one first)."""
+    return jsonify(ws().list_for(g.profile))
+
+
+@app.post("/api/teams/select")
+@member
+def select_team():
+    """Switch the selected team. Membership is checked here, not in the browser."""
+    profile = ws().select(g.profile, body().get("team_id"))
+    return jsonify({"profile": profile, "identity": identity(planner.team(profile["team_id"]))})
 
 
 # -- chatbot ----------------------------------------------------------------

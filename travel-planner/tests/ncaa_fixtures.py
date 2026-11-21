@@ -7,6 +7,8 @@ SCHOOLS = [
     {"slug": "toledo", "name": "Toledo", "long": "University of Toledo"},
     {"slug": "kent-st", "name": "Kent St.", "long": "Kent State University"},
     {"slug": "ohio", "name": "Ohio", "long": "Ohio University"},
+    {"slug": "harvard", "name": "Harvard", "long": "Harvard University"},
+    {"slug": "yale", "name": "Yale", "long": "Yale University"},
 ]
 RANKINGS = {"sport": "Football", "title": "Associated Press", "updated": "Through Games NOV. 16, 2026", "page": 1, "pages": 1,
             "data": [{"RANK": "1", "SCHOOL": "Ohio St. (52)", "POINTS": "1,625", "PREVIOUS": "1", "RECORD": "11-0"},
@@ -59,6 +61,13 @@ class FakeNCAA:
             return STANDINGS
         if path == "/scoreboard/football/fbs":
             return AWAY_AT_OHIO_ST
+        if path.startswith("/scoreboard/volleyball-women/d1/"):
+            import time as _t
+            away = (date.today() + timedelta(days=4)).strftime("%Y/%m/%d")
+            if path.endswith(away):                   # Harvard at Yale, 4 days from now
+                return scoreboard(team("yale", "Yale", "Yale University"), team("harvard", "Harvard", "Harvard University"),
+                                  epoch=int(_t.time()) + 4 * 86400, game_id="7700001")
+            return {"games": []}
         if path.startswith("/scoreboard/basketball-men/d1/"):
             d = (date.today() + timedelta(days=3)).strftime("%Y/%m/%d")
             return HOME_VS_OHIO if path.endswith(d) else {"games": []}

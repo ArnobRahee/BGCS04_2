@@ -1,6 +1,6 @@
 """Demo mode data: used only when Supabase isn't configured (and by the tests).
 
-Creates one team, a coach, eight players with a mix of diet needs, and one planned trip,
+Creates one team, a coach and eight players with a mix of diet needs (no trips: a new team starts empty),
 plus two fake login tokens the front end's demo buttons use: demo-coach and demo-player.
 """
 from datetime import datetime, timedelta
@@ -11,7 +11,8 @@ PLAYERS = [("Aiden Carter", []), ("Omar Haddad", ["halal"]), ("Priya Nair", ["ve
            ("Sofia Reyes", ["vegan", "vegetarian"]), ("Noah Fischer", ["nut_free"])]
 
 
-def seed_demo(db, planner):
+def seed_demo(db, planner, with_trip=False):
+    """The demo workspace starts with no trips (as a new team would). Tests pass with_trip=True."""
     team = db.insert("teams", {"name": "BGSU Falcons", "join_code": "FALCON-2026", **HOME,
                                "owner_id": "demo-coach-id", "ncaa_seo": "bowling-green",
                                "ncaa_name": "Bowling Green", "sport": "football", "division": "fbs"})[0]
@@ -19,8 +20,12 @@ def seed_demo(db, planner):
                                    "team_id": team["id"], "diet_tags": []})[0]
     players = db.insert("profiles", [{"id": f"demo-player-{i}", "full_name": n, "role": "player",
                                       "team_id": team["id"], "diet_tags": d} for i, (n, d) in enumerate(PLAYERS, 1)])
+    db.insert("team_members", [{"team_id": team["id"], "profile_id": coach["id"], "role": "coach"}]
+              + [{"team_id": team["id"], "profile_id": p["id"], "role": "player"} for p in players])
     db.users["demo-coach"] = {"id": coach["id"], "email": "coach@demo.local"}
     db.users["demo-player"] = {"id": players[1]["id"], "email": "player@demo.local"}   # Omar: halal menu filter
+    if not with_trip:
+        return team
     match = (datetime.now() + timedelta(days=8)).replace(hour=15, minute=30, second=0, microsecond=0)
     planner.create_trip(team, coach, {"opponent": "Ohio State", "venue_id": "V001",
                                       "match_at": match.isoformat(timespec="minutes"),

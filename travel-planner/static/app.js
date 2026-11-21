@@ -116,8 +116,10 @@ async function api(path, opts = {}) {
 }
 
 /* Browser cache for slow-changing GETs (NCAA data). Falls back to the network if storage is unavailable. */
+// Browser cache, keyed by the selected team so one team's NCAA data never shows on another team.
+const cacheKey = (path) => `cache:${(state.me && state.me.profile && state.me.profile.team_id) || "-"}:${path}`;
 async function cached(path, minutes) {
-  const key = "cache:" + path;
+  const key = cacheKey(path);
   try {
     const hit = JSON.parse(localStorage.getItem(key) || "null");
     if (hit && hit.until > Date.now()) return hit.data;
@@ -127,7 +129,7 @@ async function cached(path, minutes) {
   catch (_) { try { for (const k of Object.keys(localStorage)) if (k.startsWith("cache:")) localStorage.removeItem(k); } catch (__) {} }
   return data;
 }
-const forget = (path) => { try { localStorage.removeItem("cache:" + path); } catch (_) {} };
+const forget = (path) => { try { localStorage.removeItem(cacheKey(path)); } catch (_) {} };
 
 async function busy(button, fn) {
   const old = button ? [...button.childNodes] : null;
@@ -310,6 +312,15 @@ const checkedDiets = (container) => $$("input:checked", container).map((i) => i.
 function setupOnboard() {
   const form = $("#onboard-form");
   dietBoxes($(".diet-boxes", form));
+  // Home campus from its name (OpenStreetMap), so nobody starts with another school's location.
+  $("#home-find").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    const list = await api("/api/geocode?q=" + encodeURIComponent(form.home_name.value.trim()));
+    if (!list.length) return fill($("#home-found"), el("span", { class: "warn-text" }, "No match. Add the city, or type the coordinates."));
+    const r = list[0];
+    form.home_lat.value = r.lat; form.home_lng.value = r.lng;
+    fill($("#home-found"), el("span", { class: "ok-text" }, `📍 ${r.address}`), " · ",
+      el("a", { href: gmapsLink(r.lat, r.lng), target: "_blank", rel: "noopener" }, "check on Google Maps ↗"));
+  }));
   form.addEventListener("change", () => {
     const role = form.role.value;
     $$("[data-for]", form).forEach((d) => (d.hidden = d.dataset.for !== role));
@@ -368,32 +379,68 @@ function renderShell() {
     el("button", { type: "button", class: "nav-link", "data-page": id, onclick: () => go(id) },
       el("span", { class: "nav-ico", "aria-hidden": "true" }, icon), el("span", { class: "nav-label" }, text),
       id === "announcements" ? el("b", { class: "nav-dot", id: "unread-dot", hidden: true }) : null)));
-  $("#brand-mark").textContent = initials(team.name);
-  $("#brand-team").textContent = team.name || "";
-  $("#team-mark").textContent = initials(team.name);
-  $("#team-title").textContent = team.name || "";
-  $("#team-sub").textContent = team.home_name ? `Home: ${team.home_name}` : "Away game travel";
+  paintIdentity();
   $("#avatar").textContent = initials(p.full_name);
   $("#who-name").textContent = p.full_name;
   $("#who-role").textContent = roleName(p.role);
   $("#who-email").textContent = state.me.user.email || "";
-  fill($("#season"), el("span", {}, `${new Date().getFullYear()} SEASON`), el("strong", {}, team.name || ""),
-    el("small", {}, isCoach() ? "Team Planner workspace" : "Player account"));
   $("#role-toggle").hidden = $("#demo-label").hidden = !CFG.demo;
   $$("[data-demo-switch]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.demoSwitch === demoToken));
   $("#chat-input").placeholder = isCoach() ? "e.g. Which package is closest to the stadium?" : "e.g. When does the bus leave?";
   $("#assistant-sub").textContent = isCoach() ? "Prepares bookings · you approve them" : "Answers from your published trip info";
-  // NCAA program name for the topbar (cached, non-blocking)
-  cached("/api/ncaa/my-team", 10).then((info) => {
-    state.ncaa = info;
-    if (info.linked) {
-      $("#team-sub").textContent = `${info.sport_name} · ${info.division_name}`;
-      // Team name stays the app's team; the NCAA program is shown as what it is: a linked data source.
-      fill($("#season"), el("span", {}, `${new Date().getFullYear()} SEASON`), el("strong", {}, team.name || ""),
-        el("small", {}, `NCAA: ${info.name} ${info.sport_name}${info.summary && info.summary.record ? " · " + info.summary.record : ""}`));
-    }
-  }).catch(() => {});
 }
+
+/* ---------- selected team identity: one source (state.me.team.identity) for every team label ---------- */
+const ident = () => (state.me && state.me.team && state.me.team.identity) || null;
+function teamBadge(i, cls) {
+  const box = el("span", { class: cls, "aria-hidden": "true" }, i ? i.initials : "?");
+  if (i && i.logo) {                                  // NCAA's own logo for this school; initials if it fails
+    const img = el("img", { src: i.logo, alt: "", loading: "lazy" });
+    img.addEventListener("load", () => { box.textContent = ""; box.classList.add("has-logo"); box.append(img); });
+    img.addEventListener("error", () => img.remove());
+  }
+  return box;
+}
+function paintIdentity() {
+  const i = ident();
+  const sportLine = i && i.linked ? [i.sport_name, i.division_name].filter(Boolean).join(" · ") : "NCAA program not linked yet";
+  $("#brand-mark").replaceWith(Object.assign(teamBadge(i, "brand-mark"), { id: "brand-mark" }));
+  $("#brand-team").textContent = i ? [i.display_name, i.linked ? i.sport_name : null].filter(Boolean).join(" · ") : "No team selected";
+  $("#team-mark").replaceWith(Object.assign(teamBadge(i, "n-mark"), { id: "team-mark" }));
+  $("#team-title").textContent = i ? i.display_name : "No team selected";
+  $("#team-sub").textContent = sportLine;
+  fill($("#season"), el("span", {}, `${i ? i.season : new Date().getFullYear()} SEASON`), el("strong", {}, i ? i.display_name : "No team selected"),
+    el("small", {}, i && i.linked ? `NCAA: ${i.university} ${i.sport_name}` : isCoach() ? "Link your NCAA program on the Team page" : "Player account"));
+  const sw = $(".team-switch");
+  sw.classList.toggle("can-switch", (state.me.teams || []).length > 1);
+  sw.title = (state.me.teams || []).length > 1 ? "Switch team" : "";
+}
+
+// Switch the selected team (server checks membership), then reload everything team-specific.
+async function switchTeam(teamId, message) {
+  await api("/api/teams/select", { method: "POST", body: { team_id: teamId } });
+  await refreshTeam(message);
+}
+async function refreshTeam(message) {
+  ["/api/ncaa/my-team", "/api/suggestions"].forEach(forget);
+  state.ncaa = null; state.trips = null; state.tripId = null; state.prefill = null;
+  try { sessionStorage.removeItem("rally-trip-draft"); } catch (_) {}
+  state.me = await api("/api/me");
+  renderShell();
+  loadChat();
+  if (message) flash(message, "ok");
+  if (location.hash.replace(/^#\/?/, "") === "home") route(); else go("home");
+}
+function openTeamMenu() {
+  const teams = state.me.teams || [];
+  if (teams.length < 2) return;
+  const m = modal("Switch team", el("div", { class: "team-menu" }, teams.map((t) => el("button", {
+    type: "button", class: t.selected ? "current" : "", disabled: t.selected,
+    onclick: () => { m.close(); switchTeam(t.team_id, `Now planning for ${t.display_name}.`); } },
+    teamBadge(t, "n-mark"), el("span", {}, el("b", {}, t.display_name), el("small", {}, t.linked ? `${t.sport_name} · ${t.division_name}` : "NCAA program not linked"))))),
+    { eyebrow: "YOUR TEAMS" });
+}
+$(".team-switch").addEventListener("click", openTeamMenu);
 
 async function refreshBadges() {
   if (isCoach()) return;
@@ -512,20 +559,69 @@ async function coachHome() {
     unpublished && `${unpublished} booked trip${unpublished > 1 ? "s" : ""} not shared with players yet`].filter(Boolean);
   const page = el("div", { class: "page" },
     intro(fmt(new Date(), { weekday: "long", month: "long", day: "numeric" }), `${greet}, ${state.me.profile.full_name}.`,
-      todo.length ? todo.join(" · ") + "." : trips.length ? "Everything is up to date." : "Plan your first away trip to get started.",
+      !trips.length ? "No trips planned yet." : todo.length ? todo.join(" · ") + "." : "Everything is up to date.",
       el("button", { type: "button", class: "primary", onclick: () => { state.prefill = null; go("plan"); } }, "＋ Plan new trip")));
-  add(page, full ? nextTripCard(full) : el("section", { class: "empty", style: "margin-bottom:34px" }, el("b", {}, "No upcoming away trips"),
-    el("p", {}, "Start from an NCAA away game on the right, or enter the venue yourself."),
-    el("button", { type: "button", class: "primary", onclick: () => go("plan") }, "＋ Plan a trip")));
+  // Upcoming NCAA games are suggestions, never trips: nothing is saved until the planner confirms in the wizard.
+  const suggest = el("section", { class: full ? "suggest compact" : "suggest" });
+  add(page, full ? nextTripCard(full) : suggest);
   const pulse = el("aside", { class: "activity" });
   add(page, el("div", { class: "home-grid" },
-    el("section", {}, el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "Upcoming"), el("h2", {}, "On the road")),
-      el("button", { type: "button", class: "text-btn", onclick: () => go("trips") }, "All trips →")),
-    upcoming(trips).length ? tripList(upcoming(trips), (t) => go("trips/" + t.id)) : el("p", { class: "sub" }, "Nothing scheduled.")),
+    el("section", {}, full ? suggest : null,
+      el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "Planned trips"), el("h2", {}, "On the road")),
+        trips.length ? el("button", { type: "button", class: "text-btn", onclick: () => go("trips") }, "All trips →") : null),
+    upcoming(trips).length ? tripList(upcoming(trips), (t) => go("trips/" + t.id)) : el("p", { class: "sub" }, trips.length ? "No upcoming trips." : "No trips planned yet.")),
     pulse));
+  gameSuggestions(suggest, { compact: !!full });
   teamPulse(pulse, full);
   return page;
 }
+
+/* Upcoming away games -> suggestions. The server filters (future, away, no trip yet, opponent and date
+   known); Aivana only chooses which listed game to plan next. Nothing here creates a trip. */
+async function gameSuggestions(box, { compact = false } = {}) {
+  const head = (h, p) => el("div", {}, el("span", { class: "eyebrow" }, ident() ? ident().display_name.toUpperCase() + (ident().sport_name ? " · " + ident().sport_name.toUpperCase() : "") : "YOUR TEAM"),
+    el("h2", {}, h), p ? el("p", { class: "sub" }, p) : null);
+  if (!compact) fill(box, head("Your next away game is coming up.", "You haven't planned any team travel yet. Start with an upcoming game and let Aivana help you compare travel options."),
+    el("p", { class: "sub" }, "Loading your schedule..."));
+  else fill(box);
+  let s;
+  try { s = await cached("/api/suggestions", 5); }
+  catch (e) {
+    if (compact) return;
+    return fill(box, head("Plan your next away trip.", "Couldn't load the NCAA schedule: " + e.message), customButtons(true));
+  }
+  const games = s.games || [];
+  if (!games.length) {
+    if (compact) return;
+    const why = s.warning || (s.upcoming_away === 0 ? "No upcoming away games found." : "Every upcoming away game already has a trip.");
+    return fill(box, head(s.warning ? "Plan your next away trip." : "No upcoming away games found.", why), customButtons(true));
+  }
+  const pick = games.find((g) => s.pick && g.game_id === s.pick.game_id) || games[0];
+  const fromAivana = s.pick && s.pick.source === "aivana";
+  const detail = (g) => [
+    ["Opponent", g.opponent_full || g.opponent],
+    ["Date & time", (g.start_time && !/TBA|TBD/i.test(g.start_time)) ? when(g.match_at) : `${g.start_date} · time not announced`],
+    ["Venue", g.missing.includes("venue") ? `${g.venue_name} · venue to confirm` : g.venue_name],
+    ["Destination", g.missing.includes("venue") ? `${g.opponent_full || g.opponent} (home game)` : g.venue_name]];
+  const plan = (g) => { state.prefill = { ...g.plan, from_suggestion: true, missing: g.missing }; go("plan"); };
+  const card = el("div", { class: "suggest-card" },
+    el("div", { class: "suggest-facts" }, detail(pick).map(([k, v]) => el("span", {}, el("small", {}, k), v))),
+    s.pick ? el("p", { class: "suggest-why" }, el("b", {}, fromAivana ? "✦ Aivana: " : "Next up: "), s.pick.reason,
+      s.pick.note ? el("span", { class: "hint" }, " " + s.pick.note) : null) : null,
+    pick.missing.length ? el("p", { class: "warn-text" }, `Still needed from you: ${pick.missing.join(", ")}.`) : null,
+    el("div", { class: "row" },
+      el("button", { type: "button", class: "primary", onclick: () => plan(pick) }, fromAivana ? "✦ Plan with Aivana" : "Plan this trip"),
+      el("button", { type: "button", class: "secondary", onclick: () => { state.prefill = null; go("plan"); } }, "Plan a custom trip")));
+  const others = games.filter((g) => g !== pick).slice(0, 4);
+  fill(box, compact ? head("Suggested next trip", null) : head("Your next away game is coming up.", "You haven't planned any team travel yet. Start with an upcoming game and let Aivana help you compare travel options."),
+    card,
+    others.length ? el("div", { class: "suggest-more" }, el("span", { class: "eyebrow" }, "Other upcoming away games"),
+      others.map((g) => el("div", { class: "suggest-row" }, el("span", {}, el("b", {}, `at ${g.opponent}`), ` · ${g.start_date}${g.missing.length ? " · needs " + g.missing.join(", ") : ""}`),
+        el("button", { type: "button", class: "text-btn", onclick: () => plan(g) }, "Plan →")))) : null);
+}
+const customButtons = (create) => el("div", { class: "row" },
+  el("button", { type: "button", class: "primary", onclick: () => { state.prefill = null; go("plan"); } }, create ? "＋ Create a trip" : "Plan a custom trip"),
+  isCoach() && !(ident() && ident().linked) ? el("button", { type: "button", class: "secondary", onclick: () => go("team") }, "Link NCAA program") : null);
 
 function nextTripCard(t) {
   const pkg = chosenPackage(t);
@@ -599,7 +695,8 @@ function ncaaSummary(info, { compact = false } = {}) {
     el("ul", { class: "game-list" }, games.length ? games.map((g) => el("li", {},
       el("span", {}, el("strong", {}, `${g.is_away ? "at" : "vs"} ${teamLabel(g.opponent)}`),
         `${gameWhen(g)}${g.network ? " · " + g.network : ""}${g.state === "final" ? ` · ${g.away.score}-${g.home.score} final` : ""}`),
-      g.plan && isCoach() && g.state !== "final" && g.state !== "live" ? el("button", { type: "button", class: "secondary small", onclick: () => { state.prefill = g.plan; go("plan"); } }, "Plan trip")
+      g.planned_trip_id && isCoach() ? el("button", { type: "button", class: "text-btn small", onclick: () => go("trips/" + g.planned_trip_id) }, "Open trip →")
+      : g.plan && isCoach() && g.state !== "final" && g.state !== "live" ? el("button", { type: "button", class: "secondary small", onclick: () => { state.prefill = { ...g.plan, missing: g.plan.venue_confirmed ? [] : ["venue"] }; go("plan"); } }, "Plan trip")
         : g.url ? el("a", { href: g.url, target: "_blank", rel: "noopener", class: "text-btn small" }, "ncaa.com") : null))
       : el("li", { class: "sub" }, info.sport === "football" ? "No game this week." : "No games in the next two weeks.")),
   ];
@@ -1009,8 +1106,11 @@ async function planTrip() {
   // Keep an unfinished brief if the coach navigates away (cleared once the trip is created).
   const DRAFT_KEY = "rally-trip-draft";
   let saved = null;
-  if (!state.prefill && !pre.opponent) { try { saved = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null"); } catch (_) {} }
+  const teamId = state.me.profile.team_id;
+  if (!pre.opponent) { try { saved = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null"); } catch (_) {} }
+  if (saved && saved.data && saved.data.team_id !== teamId) saved = null;      // a draft from another team
   const data = {
+    team_id: pre.team_id || teamId,
     opponent: pre.opponent || "", venue_id: pre.venue_id || (pre.venue_name ? "" : (venues[0] || {}).id || ""),
     venue_name: pre.venue_name || "", venue_address: "", venue_lat: "", venue_lng: "", ncaa_game_id: pre.ncaa_game_id || "",
     match_at: pre.match_at || "", depart_after: "", num_players: team.players.length || 20, num_coaches: 3, num_staff: 2,
@@ -1025,8 +1125,10 @@ async function planTrip() {
   const shell = el("div", { class: "form-shell" });
   shell.addEventListener("input", () => keepDraft());
   add(page, el("div", { class: "page-intro" },
-    el("div", {}, el("span", { class: "eyebrow" }, pre.ncaa_game_id ? "NEW AWAY TRIP · FROM NCAA SCHEDULE" : "NEW AWAY TRIP"), el("h1", {}, "Build the travel brief"),
-      el("p", {}, "We'll use these details to price every hotel, team meal and bus combination.")),
+    el("div", {}, el("span", { class: "eyebrow" }, `${(ident() && ident().display_name || "").toUpperCase()} · ${pre.ncaa_game_id ? "NEW AWAY TRIP · FROM NCAA SCHEDULE" : "NEW AWAY TRIP"}`), el("h1", {}, "Build the travel brief"),
+      el("p", {}, pre.ncaa_game_id ? "Opponent and date come from the NCAA schedule. Check them, add the travel party and budget, then generate packages. Nothing is saved until you click Generate packages."
+        : "We'll use these details to price every hotel, team meal and bus combination."),
+      pre.missing && pre.missing.length ? el("p", { class: "warn-text" }, `The schedule doesn't confirm the ${pre.missing.join(" or ")}. Please fill ${pre.missing.length > 1 ? "them" : "it"} in.`) : null),
     el("button", { type: "button", class: "secondary", onclick: () => { try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) {} go("trips"); } }, "Cancel")), stepper, shell);
 
   const venueName = () => (data.venue_id ? (venues.find((v) => v.id === data.venue_id) || {}).name : data.venue_name) || "Custom venue";
@@ -1034,6 +1136,28 @@ async function planTrip() {
     el("input", { name, value: data[name] ?? "", oninput: (e) => (data[name] = e.target.value), ...attrs }), hint ? el("p", { class: "hint" }, hint) : null);
   const title = (n, h, p) => el("div", { class: "form-title" }, el("i", {}, n), el("div", {}, el("h2", {}, h), el("p", {}, p)));
   const errBox = el("div", { class: "form-error", role: "alert", hidden: true });
+
+  // Describe the trip in words; Aivana's structured output fills the form for the planner to check.
+  let parsedNote = null, describeText = "";
+  function describeBox() {
+    if (!state.me.aivana) return null;
+    const text = el("textarea", { rows: 2, value: describeText, oninput: (e) => (describeText = e.target.value), placeholder: "e.g. At Toledo on Dec 5 at 7pm. 22 players, 3 coaches, 2 staff. Leave after 2pm the day before, one night, budget $8,000." });
+    const note = el("p", { class: "hint", "aria-live": "polite" }, parsedNote || "Optional: Aivana fills in the form from your description. You check everything before saving.");
+    const go_ = el("button", { type: "button", class: "secondary" }, "✦ Fill with Aivana");
+    go_.addEventListener("click", () => busy(go_, async () => {
+      const r = await api("/api/trips/parse", { method: "POST", body: { text: text.value } });
+      const f = r.fields || {};
+      const names = { opponent: "opponent", match_at: "date", depart_after: "departure limit", num_players: "players", num_coaches: "coaches",
+        num_staff: "staff", nights: "nights", meals: "meals", budget: "budget", venue_name: "venue" };
+      const filled = Object.keys(names).filter((k) => f[k] !== undefined);
+      for (const k of filled) data[k] = typeof f[k] === "number" ? String(f[k]) : f[k];
+      if (f.venue_name) { data.venue_id = ""; data.venue_lat = ""; data.venue_lng = ""; autoFound = false; }
+      parsedNote = filled.length ? `✦ Aivana filled: ${filled.map((k) => names[k]).join(", ")}.${f.match_time_missing ? " No game time was given, so it's set to 12:00; change it." : ""} Check every field.`
+        : "Aivana didn't find trip details in that text.";
+      draw();
+    }));
+    return el("div", { class: "describe-box" }, el("label", { class: "field" }, "Describe the trip (optional)", text), el("div", { class: "row" }, go_), note);
+  }
 
   // "Other venue": find coordinates from the name (OpenStreetMap via /api/geocode), never ask for lat/lng first.
   let autoFound = false;
@@ -1116,7 +1240,7 @@ async function planTrip() {
     if (step === 1) {
       const sel = el("select", { name: "venue_id", value: data.venue_id, onchange: (e) => { data.venue_id = e.target.value; draw(); } },
         venues.map((v) => el("option", { value: v.id }, v.name)), el("option", { value: "" }, "Other venue..."));
-      body = [title("01", "Where are you headed?", "Start with the game and the away venue."), el("div", { class: "form-grid" },
+      body = [title("01", "Where are you headed?", "Start with the game and the away venue."), describeBox(), el("div", { class: "form-grid" },
         input("opponent", "Opponent", { required: true, placeholder: "e.g. Ohio State" }),
         el("label", {}, "Away venue", sel),
         !data.venue_id ? venueFinder() : null,
@@ -1170,6 +1294,7 @@ async function planTrip() {
       busy(next, async () => {
         const trip = await api("/api/trips", { method: "POST", body });
         try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) {}
+        forget("/api/suggestions");
         flash(`${trip.opponent}: ${trip.packages.length} packages priced.`, "ok");
         go("trips/" + trip.id);
       });
@@ -1254,7 +1379,10 @@ async function renderTeamNcaa(box) {
   catch (e) { return fill(box, el("h2", {}, "NCAA program"), el("p", { class: "sub" }, e.message)); }
   if (!info.linked) return renderLinkForm(box);
   fill(box, el("div", { class: "section-head" }, el("div", {}, el("span", { class: "eyebrow" }, "NCAA program"), el("h2", {}, "Record, ranking & schedule")),
-    el("button", { type: "button", class: "text-btn", onclick: () => renderLinkForm(box, info) }, "Change NCAA team")), ...ncaaSummary(info));
+    el("button", { type: "button", class: "text-btn", onclick: () => renderLinkForm(box, info) }, "Switch or add a team")), ...ncaaSummary(info),
+    (state.me.teams || []).length > 1 ? el("div", { class: "team-list" }, el("span", { class: "eyebrow" }, "Your teams"), (state.me.teams || []).map((t) =>
+      el("div", { class: "team-row" }, teamBadge(t, "n-mark"), el("span", {}, el("b", {}, t.display_name), el("small", {}, t.linked ? `${t.sport_name} · ${t.division_name}` : "Not linked")),
+        t.selected ? el("em", { class: "pill ok" }, "Selected") : el("button", { type: "button", class: "secondary small", onclick: () => switchTeam(t.team_id, `Now planning for ${t.display_name}.`) }, "Switch")))) : null);
 }
 
 async function renderLinkForm(box, current = {}) {
@@ -1286,19 +1414,18 @@ async function renderLinkForm(box, current = {}) {
       } catch (e) { results.hidden = false; fill(results, el("p", { class: "sub", style: "padding:10px" }, e.message)); }
     }, 250);
   });
-  const save = el("button", { type: "button", class: "primary" }, "Save NCAA team");
+  const save = el("button", { type: "button", class: "primary" }, current.seo ? "Switch to this team" : "Save NCAA team");
   save.addEventListener("click", () => busy(save, async () => {
     if (!picked) throw new Error("Pick your school from the list first.");
-    await api("/api/team", { method: "PATCH", body: { sport: sport.value, division: division.value, ncaa_seo: picked.slug, ncaa_name: picked.name } });
-    forget("/api/ncaa/my-team"); state.ncaa = null;
-    state.me = await api("/api/me");
-    flash(`Linked to ${picked.name}. Your team name and planned trips stay the same; NCAA record, ranking and upcoming games now come from ${picked.name}.`, "ok");
-    renderShell();
-    renderTeamNcaa(box);
+    const r = await api("/api/team", { method: "PATCH", body: { sport: sport.value, division: division.value, ncaa_seo: picked.slug, ncaa_name: picked.name } });
+    const who = `${r.identity.display_name} ${r.identity.sport_name}`;
+    await refreshTeam({ linked: `Linked ${teamName()} to ${who}.`, switched: `Switched to your ${who} team.`,
+      created: `Created a new ${who} team. It starts with no trips.`, unchanged: `Already on ${who}.` }[r.action]);
   }));
   fill(box, el("span", { class: "eyebrow" }, "NCAA program"), el("h2", { style: "margin:4px 0 6px" }, "Link your NCAA team"),
-    el("p", { class: "sub", style: "margin-bottom:18px" }, "Shows your record, ranking and upcoming games, and lets you plan trips straight from away games. ",
-      `Linking doesn't rename ${teamName()} or change trips you've already planned.`),
+    el("p", { class: "sub", style: "margin-bottom:18px" }, current.seo
+      ? `Each NCAA program has its own team with its own trips. Picking a different program switches to that team, or creates it empty; ${teamName()}'s trips stay with ${teamName()}.`
+      : "Shows your record, ranking and upcoming games, and lets you plan trips straight from away games."),
     el("div", { class: "form-grid" }, el("label", {}, "Sport", sport), el("label", {}, "Division", division),
       el("label", { class: "wide" }, "School", search, results)),
     el("div", { class: "row between", style: "margin-top:16px" }, pickedLine,
@@ -1629,7 +1756,7 @@ async function ncaaPage() {
 
 /* ================= Aivana assistant ================= */
 let chat = [];
-const chatKey = () => "chat:" + ((state.me && state.me.user.id) || "anon");
+const chatKey = () => "chat:" + ((state.me && state.me.user.id) || "anon") + ":" + ((state.me && state.me.profile && state.me.profile.team_id) || "-");
 function loadChat() {
   try { chat = JSON.parse(localStorage.getItem(chatKey()) || "[]"); } catch (_) { chat = []; }
   renderChat();

@@ -138,7 +138,7 @@ def test_aivana_never_approves_a_package():
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db, aivana=client())
     FakeSDK.reply = res(structured={"package_no": 1, "reason": "ok"})
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     trip = db.select("trips")[0]
     assert trip["ai_recommendation"]["source"] == "aivana"
     assert trip["status"] == "PLANNING" and trip["selected_package_no"] is None

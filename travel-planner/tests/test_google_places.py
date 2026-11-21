@@ -61,7 +61,7 @@ def test_planner_uses_google_hotels_and_books_them(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     gp = GooglePlaces(api_key="test-key", fetch=FakeGoogle())
     planner = TravelPlanner(db, data=TravelData(None, places=gp))
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     trip = db.select("trips")[0]
     view = planner.coach_view(trip)
     hotels = {p["detail"]["hotel"]["name"] for p in view["packages"]}

@@ -25,7 +25,7 @@ def test_search_parses_and_caches():
 def client(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db)
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     monkeypatch.setattr(appmod, "DB", db)
     monkeypatch.setattr(appmod, "planner", planner)
     monkeypatch.setattr(appmod, "geocoder", Geocoder(fetch=lambda q: ROWS))
@@ -36,4 +36,5 @@ def test_geocode_route(client):
     r = client.get("/api/geocode?q=Kelly Shorts", headers=C)
     assert r.status_code == 200 and r.json[0]["lat"] == 43.5778
     assert client.get("/api/geocode?q=ab", headers=C).status_code == 400
-    assert client.get("/api/geocode?q=Kelly", headers=P).status_code == 403
+    assert client.get("/api/geocode?q=Kelly", headers=P).status_code == 200      # signed-in users (onboarding too)
+    assert client.get("/api/geocode?q=Kelly").status_code == 401

@@ -115,8 +115,17 @@ class TravelPlanner:
             raise PlanError("Package not found. Re-plan the trip and pick again.")
         return rows[0]
 
+    def team_members(self, team_id, role):
+        """Profiles that belong to this team (team_members), plus older rows linked only by profiles.team_id."""
+        rows = {p["id"]: p for p in self.db.select("profiles", {"team_id": team_id, "role": role})}
+        ids = [m["profile_id"] for m in self.db.select("team_members", {"team_id": team_id, "role": role})
+               if m["profile_id"] not in rows]
+        if ids:
+            rows.update({p["id"]: p for p in self.db.select("profiles", {"id": ids})})
+        return sorted(rows.values(), key=lambda p: (p.get("full_name") or "").lower())
+
     def team_players(self, team_id):
-        return self.db.select("profiles", {"team_id": team_id, "role": "player"}, order="full_name.asc")
+        return self.team_members(team_id, "player")
 
     # -- planning ----------------------------------------------------------
     def create_trip(self, team: dict, coach: dict, form: dict) -> dict:
@@ -148,8 +157,14 @@ class TravelPlanner:
         except (ValueError, TypeError, AttributeError, OverflowError) as exc:
             raise PlanError("Check the match date/time and the numbers in the form.") from exc
         validate_trip(row)
+        if form.get("team_id") and str(form["team_id"]) != str(team["id"]):
+            raise PlanError("You switched teams while planning. Open Plan a Trip again for the team you're on now.")
         for other in self.db.select("trips", {"team_id": team["id"]}):
-            if (other.get("status") != "CANCELLED" and other["opponent"].strip().lower() == row["opponent"].lower()
+            if other.get("status") == "CANCELLED":
+                continue
+            if row["ncaa_game_id"] and other.get("ncaa_game_id") == row["ncaa_game_id"]:
+                raise PlanError(f"This game already has a trip ({other['opponent']}). Open it from My Trips.")
+            if (other["opponent"].strip().lower() == row["opponent"].lower()
                     and str(other["match_at"])[:16].replace(" ", "T") == row["match_at"][:16]):
                 raise PlanError(f"You already have a trip for {other['opponent']} at that date and time. "
                                 "Open it from My Trips instead of creating a copy.")

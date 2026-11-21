@@ -12,6 +12,7 @@ SCHEMA = {
     "teams": {"id", "name", "join_code", "home_name", "home_lat", "home_lng", "owner_id", "created_at",
               "ncaa_seo", "ncaa_name", "sport", "division"},
     "profiles": {"id", "full_name", "role", "team_id", "diet_tags", "created_at"},
+    "team_members": {"id", "team_id", "profile_id", "role", "created_at"},
     "trips": {"id", "team_id", "created_by", "opponent", "venue_name", "venue_address", "venue_lat", "venue_lng",
               "match_at", "depart_after", "nights", "budget", "num_players", "num_coaches", "num_staff", "diet_tags",
               "meals", "status", "selected_package_no", "published", "ai_recommendation", "created_at", "ncaa_game_id"},
@@ -37,7 +38,7 @@ C, P = {"Authorization": "Bearer demo-coach"}, {"Authorization": "Bearer demo-pl
 def client(monkeypatch):
     db = appmod.dbmod.MemoryDB()
     planner = appmod.TravelPlanner(db)
-    appmod.seed_demo(db, planner)
+    appmod.seed_demo(db, planner, with_trip=True)
     monkeypatch.setattr(appmod, "DB", db)
     monkeypatch.setattr(appmod, "planner", planner)
     return appmod.app.test_client(), db

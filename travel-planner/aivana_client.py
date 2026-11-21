@@ -214,6 +214,72 @@ class AivanaClient:
         reason = f"Package {best['package_no']} at ${best['total_cost']:,.2f}: " + "; ".join(bits) + "."
         return {"package_no": best["package_no"], "reason": reason, "source": "ranking"}
 
+    # -- which game to plan next -------------------------------------------
+    def suggest_game(self, team: dict, games: list) -> dict:
+        """games: eligible upcoming away games (already filtered by code). Aivana picks one id and
+        explains; it may not invent dates, venues or costs. Cached per team + game list."""
+        soonest = games[0]
+        fallback = {"game_id": soonest["game_id"], "source": "schedule",
+                    "reason": f"Your next away game is at {soonest['opponent']}"
+                              + (f" on {soonest['start_date']}" if soonest.get("start_date") else "") + "."}
+        if not self.configured:
+            return {**fallback, "note": "Aivana isn't connected, so this is simply the soonest away game."}
+        key = (team.get("team_id"), tuple(g["game_id"] for g in games))
+        cache = self.__dict__.setdefault("_suggest_cache", {})
+        if key in cache:
+            return cache[key]
+        brief = [{"game_id": g["game_id"], "opponent": g["opponent_full"] or g["opponent"], "date": g["start_date"],
+                  "time": g["start_time"], "venue_known": "venue" not in g["missing"], "missing": g["missing"]}
+                 for g in games[:10]]
+        valid = [g["game_id"] for g in games[:10]]
+        schema = {"type": "object", "additionalProperties": False, "required": ["game_id", "reason"],
+                  "properties": {"game_id": {"type": "string", "enum": valid},
+                                 "reason": {"type": "string", "description": "One or two sentences for the team planner."}}}
+        system = ("You help a college team's travel planner decide which upcoming away game to plan next. "
+                  "Choose one game_id from the list. Use only the facts given: never invent dates, times, venues, "
+                  "distances or costs. Usually the soonest game matters most; mention missing details the planner must fill in. "
+                  "End by asking if they'd like to start planning transportation, lodging and meals.")
+        prompt = (f"Team: {team.get('display_name')} ({team.get('sport_name')}). Today: {datetime.now():%Y-%m-%d}.\n"
+                  f"Eligible away games: {json.dumps(brief)}")
+        try:
+            out = self.structured(prompt, schema, system)
+            gid = str(out.get("game_id") or "").strip()
+            if gid not in valid:
+                raise ValueError(f"Aivana returned game {gid!r}, which isn't one of the listed games")
+            result = {"game_id": gid, "reason": _plain(out.get("reason"))[:500], "source": "aivana"}
+        except Exception as exc:
+            log.warning("Aivana game suggestion failed: %s: %s", type(exc).__name__, exc)
+            return {**fallback, "note": f"Aivana's suggestion isn't available: {friendly_error(exc)}. Showing the soonest away game."}
+        cache[key] = result
+        return result
+
+    # -- trip request parsing ---------------------------------------------
+    def parse_trip(self, text: str, today) -> dict:
+        """Free text -> trip form fields with Aivana's structured output. Only what's stated; the
+        form and the server still validate everything before a trip is saved."""
+        if not self.configured:
+            raise RuntimeError("Aivana isn't connected, so describe-the-trip is off. Fill in the form instead.")
+        num = {"type": ["integer", "null"]}
+        txt = {"type": ["string", "null"]}
+        schema = {"type": "object", "additionalProperties": False,
+                  "required": ["opponent", "match_date", "match_time", "venue_name", "num_players", "num_coaches",
+                               "num_staff", "nights", "meals", "budget", "depart_after_date", "depart_after_time"],
+                  "properties": {"opponent": txt, "match_date": {**txt, "description": "YYYY-MM-DD"},
+                                 "match_time": {**txt, "description": "HH:MM, 24-hour"}, "venue_name": txt,
+                                 "num_players": num, "num_coaches": num, "num_staff": num, "nights": num, "meals": num,
+                                 "budget": {"type": ["number", "null"]},
+                                 "depart_after_date": {**txt, "description": "YYYY-MM-DD"},
+                                 "depart_after_time": {**txt, "description": "HH:MM, 24-hour"}}}
+        system = ("Extract an away-game trip request into the given fields. Use null for anything the text doesn't "
+                  f"state; never guess. Today is {today:%A %Y-%m-%d}; resolve relative dates like 'next Friday' from it. "
+                  "Do not calculate costs.")
+        try:
+            out = self.structured(text, schema, system)
+        except Exception as exc:
+            log.warning("Aivana trip parsing failed: %s: %s", type(exc).__name__, exc)
+            raise RuntimeError(f"Aivana couldn't read that: {friendly_error(exc)}. Fill in the form instead.") from exc
+        return _clean_trip_fields(out)
+
     # -- announcement ------------------------------------------------------
     def draft_announcement(self, trip: dict, package: dict) -> dict:
         template = self._draft_local(trip, package)
@@ -277,3 +343,37 @@ def _plain(text) -> str:
     text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), str(text or ""))
     text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
     return text.replace("**", "").strip()
+
+
+def _clean_trip_fields(out: dict) -> dict:
+    """Keep only well-formed values; the wizard shows what was filled for the planner to check."""
+    fields = {}
+    if isinstance(out.get("opponent"), str) and out["opponent"].strip():
+        fields["opponent"] = out["opponent"].strip()[:80]
+    if isinstance(out.get("venue_name"), str) and out["venue_name"].strip():
+        fields["venue_name"] = out["venue_name"].strip()[:120]
+
+    def when(d, t, default_time):
+        try:
+            day = datetime.strptime(str(d), "%Y-%m-%d")
+        except (TypeError, ValueError):
+            return None
+        try:
+            hm = datetime.strptime(str(t), "%H:%M") if t else datetime.strptime(default_time, "%H:%M")
+        except ValueError:
+            hm = datetime.strptime(default_time, "%H:%M")
+        return day.replace(hour=hm.hour, minute=hm.minute).strftime("%Y-%m-%dT%H:%M")
+
+    if out.get("match_date"):
+        fields["match_at"] = when(out["match_date"], out.get("match_time"), "12:00")
+        if not out.get("match_time"):
+            fields["match_time_missing"] = True
+    if out.get("depart_after_date"):
+        fields["depart_after"] = when(out["depart_after_date"], out.get("depart_after_time"), "08:00")
+    for k in ("num_players", "num_coaches", "num_staff", "nights", "meals"):
+        v = out.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+            fields[k] = v
+    if isinstance(out.get("budget"), (int, float)) and not isinstance(out.get("budget"), bool) and out["budget"] >= 0:
+        fields["budget"] = float(out["budget"])
+    return {"fields": {k: v for k, v in fields.items() if v is not None}, "source": "aivana"}

@@ -153,6 +153,21 @@ Users stay signed in on their device (Supabase keeps the session in the browser)
 reserved yet) → coach approves → **Booked** → assign rooms/buses → publish → players see the plan.
 If a hotel sells out, approval fails, nothing stays half-booked, and the trip returns to Planning.
 
+**Team workspaces:** every NCAA program (school + sport + division) is its own team with its own
+trips, roster and announcements, keyed by the team's id. A user can belong to several and switch
+from the top bar or the Team page; picking a new program creates an empty workspace (home campus
+found on the map). The selected team's identity (name, sport, division, NCAA logo, season) comes
+from one place (`workspaces.identity`) and drives the sidebar, top bar, season block and Team Pulse.
+
+**Upcoming games are not trips.** The dashboard lists upcoming away games as suggestions: code keeps
+only future away games with no trip yet and a known opponent and date, and Aivana picks which to plan
+next (schema-limited to those game ids). "Plan with Aivana" opens the wizard prefilled; a trip is saved
+only when the planner clicks Generate packages. One trip per scheduled game. New teams (and the demo)
+start with zero trips.
+
+**Describe the trip:** the wizard can turn a sentence ("At Toledo Dec 5, 22 players…") into form
+fields with Aivana's structured output; the planner checks every field before saving.
+
 **Input checks (server and form):** no past match dates; the earliest departure must be before
 the match; 0–150 players, 0–30 coaches, 0–50 staff, at least one traveler; 0–14 nights; 0–30 team
 meals; budget $0–$1,000,000; valid coordinates; no duplicate trip for the same opponent and time.
@@ -206,7 +221,9 @@ after 15 minutes idle; open the site a minute before you demo.
 ## Demo script (3–5 minutes)
 
 1. **Sign-in screen (20 s).** "Sign in as a Team Planner / Player" shows the sign-in pop-up (real
-   Supabase Auth when keys are set). Click **Demo mode → Team Planner**.
+   Supabase Auth when keys are set). Click **Demo mode → Team Planner**. The demo team starts with no
+   trips; the dashboard suggests its next away game. (Team → *Switch or add a team* shows another
+   program's identity and schedule in a separate, empty workspace.)
 2. **Plan a trip (60 s).** Plan a Trip → opponent, venue (pick from the list, or *Other venue* →
    **Find on map**), date. Try a past date or a departure after kick-off to show the checks. Type
    the traveler counts, set nights and budget → **Generate packages**.
